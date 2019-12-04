@@ -6,15 +6,18 @@
     Created on June 19th, 2018
 '''
 import sys, os
-sys.path.insert(0, os.path.abspath("../detect_to_standard/"))
-from detection_visualizer import *
 
-sys.path.append(os.path.abspath("../keypoint_to_standard/"))
-from keypoint_visualizer import *
+# sys.path.insert(0, os.path.abspath("../detect_to_standard/"))
+from .detection_visualizer import *
+
+# sys.path.append(os.path.abspath("../keypoint_to_standard/"))
+from .keypoint_visualizer import *
 
 draw_threshold = 0.4
 
-def show_all_from_standard_json(json_file_path, classes, joint_pairs, joint_names, img_folder_path = None, output_folder_path = None, flag_track= False):
+
+def show_all_from_standard_json(json_file_path, classes, joint_pairs, joint_names, img_folder_path=None,
+                                output_folder_path=None, flag_track=False):
     # Visualizing: Detection + Pose Estimation
     dets = read_json_from_file(json_file_path)
 
@@ -49,10 +52,13 @@ def show_all_from_standard_json(json_file_path, classes, joint_pairs, joint_name
 
             if flag_track is True:
                 track_id = candidate["track_id"]
-                img = show_poses_from_python_data(img, joints, joint_pairs, joint_names, track_id = track_id)
-                #img = show_poses_from_python_data(img, joints, joint_pairs, joint_names)
+                img = show_poses_from_python_data(img, joints, joint_pairs, joint_names, track_id=track_id)
+
+                img = draw_bbox(img, bbox, score, classes, track_id=track_id)
+                # img = show_poses_from_python_data(img, joints, joint_pairs, joint_names)
             else:
                 img = show_poses_from_python_data(img, joints, joint_pairs, joint_names)
+                img = draw_bbox(img, bbox, score, classes, -1, python_data["image"]["id"][0])
 
         if output_folder_path is not None:
             create_folder(output_folder_path)
@@ -62,7 +68,7 @@ def show_all_from_standard_json(json_file_path, classes, joint_pairs, joint_name
 
 
 def make_video_from_images(img_paths, outvid_path, fps=25, size=None,
-               is_color=True, format="XVID"):
+                           is_color=True, format="XVID"):
     """
     Create a video from a list of images.
 

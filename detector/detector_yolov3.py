@@ -5,7 +5,8 @@ from detector.models import *
 from detector.detector_utils import *
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import sys
 import time
 import datetime
@@ -45,16 +46,67 @@ if cuda:
 
 model.eval()  # Set in evaluation mode
 
-
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 imgs = []  # Stores image paths
 img_detections = []  # Stores detections for each image index
 
 
+def inference_yolov3_v1(img_path):
+    img = np.array(Image.open(img_path))
+    return inference_yolov3_from_img_v1(img)
+
+
 def inference_yolov3(img_path):
     img = np.array(Image.open(img_path))
     return inference_yolov3_from_img(img)
+
+
+## 方法名后面添加v1的表示直接修改了方法。
+def inference_yolov3_from_img_v1(img):
+    input_img = preprocess_img_for_yolo(img)
+
+    # Configure input
+    input_img = Variable(input_img.type(Tensor))
+
+    # Get detections
+    with torch.no_grad():
+        detections = model(input_img)
+        # detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)[0]
+        # detections = filter_by_thres_v1(detections, opt.conf_thres)[0]
+        detections, score = filter_by_thres_v1(detections, opt.conf_thres)
+        detections = detections[0]
+        score = score[0]
+        if detections is None:
+            return [], []
+        else:
+            detections = detections.data.cpu().numpy()
+
+    # The amount of padding that was added
+    pad_x = max(img.shape[0] - img.shape[1], 0) * (opt.img_size / max(img.shape))
+    pad_y = max(img.shape[1] - img.shape[0], 0) * (opt.img_size / max(img.shape))
+    # Image height and width after padding is removed
+    unpad_h = opt.img_size - pad_y
+    unpad_w = opt.img_size - pad_x
+
+    # Draw bounding boxes and labels of detections
+    human_candidates = []
+    human_candidates_score = []
+    if detections is not None:
+        index = 0
+        for x1, y1, x2, y2, cls_conf, cls_pred in detections:
+            # Rescale coordinates to original dimensions
+            box_h = ((y2 - y1) / unpad_h) * img.shape[0]
+            box_w = ((x2 - x1) / unpad_w) * img.shape[1]
+            y1 = ((y1 - pad_y // 2) / unpad_h) * img.shape[0]
+            x1 = ((x1 - pad_x // 2) / unpad_w) * img.shape[1]
+
+            if int(cls_pred) == 0:  # cls_pred==0
+                human_candidate = [x1, y1, box_w, box_h]
+                human_candidates.append(human_candidate)
+                human_candidates_score.append(score[index])
+            index = index + 1
+    return human_candidates, human_candidates_score
 
 
 def inference_yolov3_from_img(img):

@@ -190,14 +190,14 @@ class Pose_Matcher(SGCN_Processor):
 
             feature_1, feature_2 = self.model.forward(data_1, data_2)
 
-        # euclidian distance
+        # euclidian distance 特征向量之间的差
         diff = feature_1 - feature_2
         dist_sq = torch.sum(pow(diff, 2), 1)
         dist = torch.sqrt(dist_sq)
 
         margin = 0.2
         distance = dist.data.cpu().numpy()[0]
-        print("_____ Pose Matching: [dist: {:04.2f}]". format(distance))
+        # print("_____ Pose Matching: [dist: {:04.2f}]". format(distance))
         if dist >= margin:
             return False, distance  # Do not match
         else:

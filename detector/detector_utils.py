@@ -10,6 +10,7 @@ from torch.autograd import Variable
 import numpy as np
 import cv2
 
+
 def preprocess_img_for_yolo(img, img_size=416):
     input_img, _ = pad_to_square(img, 127.5)
     # Resize
@@ -59,7 +60,7 @@ def weights_init_normal(m):
 
 def xywh2xyxy(x):
     y = x.new(x.shape)
-    y[..., 0] = x[..., 0] - x[..., 2] / 2
+    y[..., 0] = x[..., 0] - x[..., 2] / 2  #
     y[..., 1] = x[..., 1] - x[..., 3] / 2
     y[..., 2] = x[..., 0] + x[..., 2] / 2
     y[..., 3] = x[..., 1] + x[..., 3] / 2
@@ -251,6 +252,44 @@ def bbox_iou_numpy(box1, box2):
     return intersection / ua
 
 
+def filter_by_thres_v1(prediction, conf_thres=0.5):
+    """
+    根据阈值过滤proposal
+    :param prediction:
+    :param conf_thres:
+    :param nms_thres:
+    :return: (x1, y1, x2, y2, object_conf, class_score, class_pred)
+    """
+    # prediction  [image_number,]
+    # From (center x, center y, width, height) to (x1, y1, x2, y2)
+    prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # 前四位
+    output = [None for _ in range(len(prediction))]
+    output_score = [None for _ in range(len(prediction))]
+    for image_i, image_pred in enumerate(prediction):
+        # Filter out confidence scores below threshold
+        image_pred = image_pred[image_pred[:, 4] >= conf_thres]
+        # If none are remaining => process next image
+        if not image_pred.size(0):
+            continue
+        # Object confidence times class confidence
+        score = image_pred[:, 4] * image_pred[:, 5:].max(1)[0]  # 1是维度
+        # Sort by it
+        image_pred = image_pred[(-score).argsort()]  # 将image_pred根据score排序，score越大的预测，排在越前面。
+        score = score[(-score).argsort()]
+        class_preds = image_pred[:, 5:].max(1, keepdim=True)[1].float()  # keepdim=True  shape : [...,1]
+        detections = torch.cat((image_pred[:, :5], class_preds), 1)
+
+        keep_boxes = []
+        for i in range(detections.size(0)):
+            keep_boxes += [detections[i]]
+
+        if keep_boxes:
+            output[image_i] = torch.stack(keep_boxes)
+            output_score[image_i] = score
+
+    return output, output_score
+
+
 def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
     """
     Removes detections with lower object confidence score than 'conf_thres' and performs
@@ -258,9 +297,9 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
     Returns detections with shape:
         (x1, y1, x2, y2, object_conf, class_score, class_pred)
     """
-
+    # prediction  [image_number,]
     # From (center x, center y, width, height) to (x1, y1, x2, y2)
-    prediction[..., :4] = xywh2xyxy(prediction[..., :4])
+    prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # 前四位
     output = [None for _ in range(len(prediction))]
     for image_i, image_pred in enumerate(prediction):
         # Filter out confidence scores below threshold
@@ -269,14 +308,15 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
         if not image_pred.size(0):
             continue
         # Object confidence times class confidence
-        score = image_pred[:, 4] * image_pred[:, 5:].max(1)[0]
+        score = image_pred[:, 4] * image_pred[:, 5:].max(1)[0]  # 1是维度
         # Sort by it
-        image_pred = image_pred[(-score).argsort()]
-        class_preds = image_pred[:, 5:].max(1, keepdim=True)[1].float()
-        detections = torch.cat((image_pred[:, :5], class_preds), 1)
+        image_pred = image_pred[(-score).argsort()]  # 将image_pred根据score排序，score越大的预测，排在越前面。
+        class_preds = image_pred[:, 5:].max(1, keepdim=True)[1].float()  # keepdim=True  shape : [...,1]
+        detections = torch.cat((image_pred[:, :5], class_preds), 1)  # 按列拼，直接拼成它的第5个值。
         # Perform non-maximum suppression
         keep_boxes = []
         while detections.size(0):
+            # 所有的候选跟置信度最大的比较（也会和它自己比较）
             large_overlap = bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4]) > nms_thres
             label_match = detections[0, -1] == detections[:, -1]
             # Indices of boxes with lower confidence scores, large IOUs and matching labels
@@ -293,7 +333,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 
 
 def build_targets(
-    pred_boxes, pred_conf, pred_cls, target, anchors, num_anchors, num_classes, grid_size, ignore_thres, img_dim
+        pred_boxes, pred_conf, pred_cls, target, anchors, num_anchors, num_classes, grid_size, ignore_thres, img_dim
 ):
     nB = target.size(0)
     nA = num_anchors
