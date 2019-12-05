@@ -8,10 +8,10 @@
 import sys, os
 
 # sys.path.insert(0, os.path.abspath("../detect_to_standard/"))
-from .detection_visualizer import *
+from detection_visualizer import *
 
 # sys.path.append(os.path.abspath("../keypoint_to_standard/"))
-from .keypoint_visualizer import *
+from keypoint_visualizer import *
 
 draw_threshold = 0.4
 

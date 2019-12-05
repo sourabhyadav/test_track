@@ -42,6 +42,7 @@ from utils_io_file import *
 from utils_io_folder import *
 # from .utils.utils_json import *
 from visualizer import *
+from visualizer import visualizer
 # from .utils.utils_io_file import *
 # from .utils.utils_io_folder import *
 
@@ -353,14 +354,14 @@ def light_track(pose_estimator,
     if flag_visualize is True:
         print("Visualizing Pose Tracking Results...")
         create_folder(visualize_folder)
-        show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names, image_folder, visualize_folder,
+        visualizer.show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names, image_folder, visualize_folder,
                                     flag_track=True)
         print("Visualization Finished!")
 
         img_paths = get_immediate_childfile_paths(visualize_folder)
         avg_fps = total_num_FRAMES / total_time_ALL
         # make_video_from_images(img_paths, output_video_path, fps=avg_fps, size=None, is_color=True, format="XVID")
-        make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True, format="XVID")
+        visualizer.make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True, format="XVID")
 
 
 def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame, keypoints_list_prev_frame):
@@ -783,7 +784,8 @@ def bbox_invalid(bbox):
 if __name__ == '__main__':
     global args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/video.mp4")
+    # parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/video.mp4")
+    parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/0002.mp4")
     parser.add_argument('--model', '-m', type=str, dest='test_model', default="weights/mobile-deconv/snapshot_296.ckpt")
     args = parser.parse_args()
     args.bbox_thresh = 0.4

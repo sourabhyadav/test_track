@@ -44,7 +44,9 @@ from utils_io_file import *
 from utils_io_folder import *
 
 # from .utils.utils_json import *
+
 from visualizer import *
+from visualizer import visualizer
 
 # from visualizer import visualizer
 
@@ -150,7 +152,7 @@ def light_track(pose_estimator,
                                   "keypoints": keypoints}
                 bbox_dets_list.append(bbox_det_dict)
                 keypoints_list.append(keypoints_dict)
-            assert len(bbox_dets_list) == 2
+            # assert len(bbox_dets_list) == 2
             bbox_dets_list_list.append(bbox_dets_list)
             keypoints_list_list.append(keypoints_list)
         else:
@@ -167,7 +169,7 @@ def light_track(pose_estimator,
             # if nothing detected at this frame
             if num_dets <= 0:
                 ## TODO
-                pass
+                break
 
             # 检测bbox的keypoints
             for det_id in range(num_dets):
@@ -242,7 +244,6 @@ def light_track(pose_estimator,
                 temp_bbox_dets_list.append(bbox_det_dict)
                 temp_keypoints_list.append(keypoints_dict)
 
-            assert len(temp_bbox_dets_list) == 2
             bbox_dets_list_list.append(temp_bbox_dets_list)
             keypoints_list_list.append(temp_keypoints_list)
 
@@ -266,15 +267,15 @@ def light_track(pose_estimator,
     if flag_visualize is True:
         print("Visualizing Pose Tracking Results...")
         create_folder(visualize_folder)
-        show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names, image_folder,
-                                    visualize_folder,
-                                    flag_track=True)
+        visualizer.show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names, image_folder,
+                                               visualize_folder,
+                                               flag_track=True)
         print("Visualization Finished!")
 
         img_paths = get_immediate_childfile_paths(visualize_folder)
         avg_fps = total_num_FRAMES / total_time_ALL
         # make_video_from_images(img_paths, output_video_path, fps=avg_fps, size=None, is_color=True, format="XVID")
-        make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True,
+        visualizer.make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True,
                                format="XVID")
 
 
@@ -300,7 +301,12 @@ def select_bbox_by_criterion(confidence_scores, pose_matching_scores, distance_s
     # total_score = np.zeros_like[pose_matching_scores.shape]
     total_score = scale_confidence * confidence_scores + scale_pose * pose_matching_scores + scale_dis * distance_scores
 
+    ### TODO 突然有一帧的时候，没检测到。
     max_index = np.argmax(total_score, axis=0)  # 直接找最大的下标
+    target_lost_thread = 4
+
+    # print('scores',total_score[max_index[0]][0],total_score[max_index[1]][1])
+    # print(max_index)
 
     return max_index
 
@@ -742,7 +748,8 @@ if __name__ == '__main__':
     global args
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_path', '-v', type=str, dest='video_path',
-                        default="data/demo/video.mp4")
+                        # default="data/demo/video.mp4")
+                        default="data/demo/0002.mp4")
     parser.add_argument('--model', '-m', type=str, dest='test_model',
                         default="weights/mobile-deconv/snapshot_296.ckpt")
     args = parser.parse_args()
