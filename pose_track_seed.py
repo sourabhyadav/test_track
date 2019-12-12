@@ -4,6 +4,8 @@
     April 23rd, 2019
     LightTrack: A Generic Framework for Online Top-Down Human Pose Tracking
     Demo on videos using YOLOv3 detector and Mobilenetv1-Deconv.
+
+
 '''
 import time
 import argparse
@@ -17,7 +19,7 @@ import tensorflow as tf
 from network_mobile_deconv import Network
 
 # detector utils
-from detector.detector_yolov3 import *
+from detector.detector_yolov3 import *  ##
 
 # pose estimation utils
 from HPE.dataset import Preprocessing
@@ -35,14 +37,22 @@ from graph.visualize_pose_matching import *
 # import my own utils
 import sys, os, time
 
-sys.path.append(os.path.abspath("./graph/"))
-sys.path.append(os.path.abspath("./utils/"))
+sys.path.append(os.path.abspath("./graph"))
+sys.path.append(os.path.abspath("./utils"))
+
+# print("sys.path", sys.path)
 from utils_json import *
 from utils_io_file import *
 from utils_io_folder import *
+
 # from .utils.utils_json import *
+
 from visualizer import *
 from visualizer import visualizer
+
+from utils_choose import *
+
+# from visualizer import visualizer
 
 # from .utils.utils_io_file import *
 # from .utils.utils_io_folder import *
@@ -52,6 +62,13 @@ flag_nms = False  # Default is False, unless you know what you are doing
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+################
+##单纯为了Debug
+
+image_crop_output_path = '/media/D/light-track/data/demo/crop'
+
+
+################
 
 def initialize_parameters():
     global video_name, img_id
@@ -89,8 +106,8 @@ def light_track(pose_estimator,
     # process the frames sequentially
     keypoints_list = []
     bbox_dets_list = []
-    frame_prev = -1
-    frame_cur = 0
+    # frame_prev = -1
+    # frame_cur = 0
     img_id = -1
     next_id = 0
     bbox_dets_list_list = []
@@ -102,238 +119,195 @@ def light_track(pose_estimator,
     num_imgs = len(img_paths)
     total_num_FRAMES = num_imgs
 
+    # 有gt的的bbox
+    gt_bbox_img_id_list = [0]
+
     while img_id < num_imgs - 1:
         img_id += 1
         img_path = img_paths[img_id]
         print("Current tracking: [image_id:{}]".format(img_id))
-
         frame_cur = img_id
-        if (frame_cur == frame_prev):
-            frame_prev -= 1
 
-        ''' KEYFRAME: loading results from other modules '''
-        if is_keyframe(img_id, keyframe_interval) or flag_mandatory_keyframe:
-            flag_mandatory_keyframe = False
-            bbox_dets_list = []  # keyframe: start from empty
-            keypoints_list = []  # keyframe: start from empty
+        bbox_dets_list = []  # keyframe: start from empty
+        keypoints_list = []  # keyframe: start from empty
 
+        if img_id in gt_bbox_img_id_list:
+            # 当前帧是gt帧
+            # 当做好数据处理后，要用gt来做，现在是伪gt
+            ##  TODO 带数据弄好后 remove
+            human_candidates = inference_yolov3(img_path)  # 拿到bbox
+            num_dets = len(human_candidates)
+            # 检测bbox的keypoints
+            for det_id in range(num_dets):
+                bbox_det = human_candidates[det_id]
+                bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
+                bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, enlarge_scale)
+                bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+                # update current frame bbox
+                bbox_det_dict = {"img_id": img_id,
+                                 "det_id": det_id,
+                                 "imgpath": img_path,
+                                 "track_id": det_id,
+                                 "bbox": bbox_det}
+
+                # keypoint检测，并记录时间
+                st_time_pose = time.time()
+                keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]["keypoints"]
+                end_time_pose = time.time()
+                total_time_POSE += (end_time_pose - st_time_pose)
+
+                keypoints_dict = {"img_id": img_id,
+                                  "det_id": det_id,
+                                  "imgpath": img_path,
+                                  "track_id": det_id,
+                                  "keypoints": keypoints}
+                bbox_dets_list.append(bbox_det_dict)
+                keypoints_list.append(keypoints_dict)
+            # assert len(bbox_dets_list) == 2
+            bbox_dets_list_list.append(bbox_dets_list)
+            keypoints_list_list.append(keypoints_list)
+        else:
+            # 当前帧非gt帧
             # perform detection at keyframes
+
             st_time_detection = time.time()
-            human_candidates = inference_yolov3(img_path)
+            # human_candidates  ( center_x,center_y,w,h)
+            human_candidates, confidence_scores = inference_yolov3_v1(img_path)  # 拿到bbox
+
             end_time_detection = time.time()
             total_time_DET += (end_time_detection - st_time_detection)
 
             num_dets = len(human_candidates)
             print("Keyframe: {} detections".format(num_dets))
 
-            # if nothing detected at keyframe, regard next frame as keyframe because there is nothing to track
+            # if nothing detected at this frame
             if num_dets <= 0:
-                # add empty result
-                bbox_det_dict = {"img_id": img_id,
-                                 "det_id": 0,
-                                 "track_id": None,
-                                 "imgpath": img_path,
-                                 "bbox": [0, 0, 2, 2]}
-                bbox_dets_list.append(bbox_det_dict)
+                ## TODO
+                break
 
-                keypoints_dict = {"img_id": img_id,
-                                  "det_id": 0,
-                                  "track_id": None,
-                                  "imgpath": img_path,
-                                  "keypoints": []}
-                keypoints_list.append(keypoints_dict)
-
-                bbox_dets_list_list.append(bbox_dets_list)
-                keypoints_list_list.append(keypoints_list)
-
-                flag_mandatory_keyframe = True
-                continue
-
-            ''' 2. statistics: get total number of detected persons '''
-            total_num_PERSONS += num_dets
-
-            if img_id > 0:  # First frame does not have previous frame
-                # bbox_list_prev_frame 是一个list，每个item都是dict，有 img_id-int,det_id-int,track_id-int,imgpath-str,bbox-list 几个属性，bbox是个list，包含4个值。
-                bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
-                keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
-
-            # For each candidate, perform pose estimation and data association based on Spatial Consistency (SC)
+            # 检测bbox的keypoints
             for det_id in range(num_dets):
-                # obtain bbox position and track id
                 bbox_det = human_candidates[det_id]
-
-                # enlarge bbox by 20% with same center position
                 bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
                 bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, enlarge_scale)
                 bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-
-                # Keyframe: use provided bbox
-                if bbox_invalid(bbox_det):
-                    track_id = None  # this id means null
-                    keypoints = []
-                    bbox_det = [0, 0, 2, 2]
-                    # update current frame bbox
-                    bbox_det_dict = {"img_id": img_id,
-                                     "det_id": det_id,
-                                     "track_id": track_id,
-                                     "imgpath": img_path,
-                                     "bbox": bbox_det}
-                    bbox_dets_list.append(bbox_det_dict)
-                    # update current frame keypoints
-                    keypoints_dict = {"img_id": img_id,
-                                      "det_id": det_id,
-                                      "track_id": track_id,
-                                      "imgpath": img_path,
-                                      "keypoints": keypoints}
-                    keypoints_list.append(keypoints_dict)
-                    continue
-
                 # update current frame bbox
                 bbox_det_dict = {"img_id": img_id,
                                  "det_id": det_id,
                                  "imgpath": img_path,
+                                 "track_id": None,
                                  "bbox": bbox_det}
 
-                # obtain keypoints for each bbox position in the keyframe
+                # keypoint检测，并记录时间
                 st_time_pose = time.time()
                 keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]["keypoints"]
                 end_time_pose = time.time()
                 total_time_POSE += (end_time_pose - st_time_pose)
 
-                if img_id == 0:  # First frame, all ids are assigned automatically
-                    track_id = next_id
-                    next_id += 1
-                else:
-                    track_id, match_index = get_track_id_SpatialConsistency(bbox_det, bbox_list_prev_frame)
-
-                    if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
-                        del bbox_list_prev_frame[match_index]
-                        del keypoints_list_prev_frame[match_index]
-
-                # update current frame bbox
-                bbox_det_dict = {"img_id": img_id,
-                                 "det_id": det_id,
-                                 "track_id": track_id,
-                                 "imgpath": img_path,
-                                 "bbox": bbox_det}
-                bbox_dets_list.append(bbox_det_dict)
-
-                # update current frame keypoints
                 keypoints_dict = {"img_id": img_id,
                                   "det_id": det_id,
-                                  "track_id": track_id,
                                   "imgpath": img_path,
+                                  "track_id": None,
                                   "keypoints": keypoints}
+                bbox_dets_list.append(bbox_det_dict)
                 keypoints_list.append(keypoints_dict)
 
-            # For candidate that is not assopciated yet, perform data association based on Pose Similarity (SGCN)
+            # 拿到上一帧的信息
+            bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
+            keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
+
+            ############ 裁剪
+            # if img_id in [34, 35, 36, 37, 38]:
+            #     cnt = 0
+            #     for bbox_info in bbox_list_prev_frame:
+            #         bbox_det = bbox_info['bbox']
+            #         image_path = bbox_info['imgpath']
+            #         frame_name = os.path.basename(image_path)
+            #         frame_name = frame_name.split('.')[0]
+            #         video_name = os.path.basename(image_folder)
+            #         image = cv2.imread(image_path)
+            #         bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
+            #         bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, 0.1)
+            #         bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+            #         x1, y1, w, h = max(int(bbox_det[0]), 0), max(int(bbox_det[1]), 0), bbox_det[2], bbox_det[3]
+            #         ### 得到裁剪后的图
+            #         cropped_image = image[y1:(y1 + h), x1:(x1 + w)]
+            #         create_folder(os.path.join(image_crop_output_path, video_name))
+            #         cropped_image_path = os.path.join(image_crop_output_path, video_name,
+            #                                           '{}-{:0>3d}.jpg'.format(frame_name, cnt))
+            #         cv2.imwrite(cropped_image_path, cropped_image)
+            #         ### 找bbox
+            #         crop_human_candidates, _ = inference_yolov3_v1(cropped_image_path)
+            #         for det_id in range(len(crop_human_candidates)):
+            #             bbox_det = crop_human_candidates[det_id]
+            #             ### 画bbox
+            #             # cropped_bbox_image = visualizer.draw_bbox_from_python_data(cropped_image, bbox_det)
+            #             cropped_bbox_image = cv2.rectangle(cropped_image.copy(), (int(bbox_det[0]), int(bbox_det[1])),
+            #                                                (int(bbox_det[0] + bbox_det[2]),
+            #                                                 int(bbox_det[1] + bbox_det[3])),
+            #                                                (255, 0, 255), thickness=3)
+            #             cropped_image_bbox_path = os.path.join(image_crop_output_path, video_name,
+            #                                                    '{}-{:0>3d}-{:0>3d}.jpg'.format(frame_name, cnt, det_id))
+            #             cv2.imwrite(cropped_image_bbox_path, cropped_bbox_image)
+            #         cnt += 1
+
+            ##############
+
+            num_bbox_prev_frame = len(bbox_list_prev_frame)
+
+            # 获取到三个指标的信息
+            confidence_scores = np.array(confidence_scores)
+            confidence_scores = confidence_scores[:, np.newaxis]
+            pose_matching_scores = np.zeros([num_dets, num_bbox_prev_frame], dtype=float)
+            iou_scores = np.ones([num_dets, num_bbox_prev_frame], dtype=float)
+            prev_track_ids = []
+            for bbox_prev_index in range(num_bbox_prev_frame):
+                # 上一帧中包含的trackIds
+                track_id = keypoints_list_prev_frame[bbox_prev_index]["track_id"]
+                prev_track_ids.append(track_id)
             for det_id in range(num_dets):
-                bbox_det_dict = bbox_dets_list[det_id]
-                keypoints_dict = keypoints_list[det_id]
-                assert (det_id == bbox_det_dict["det_id"])
-                assert (det_id == keypoints_dict["det_id"])
+                for bbox_prev_index in range(num_bbox_prev_frame):
+                    keypoints_cur_frame = keypoints_list[det_id]["keypoints"]
+                    bbox_cur_frame = bbox_dets_list[det_id]["bbox"]
 
-                if bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
-                    track_id, match_index = get_track_id_SGCN(bbox_det_dict["bbox"], bbox_list_prev_frame,
-                                                              keypoints_dict["keypoints"], keypoints_list_prev_frame)
+                    keypoints_prev_frame = keypoints_list_prev_frame[bbox_prev_index]["keypoints"]
+                    bbox_prev_frame = bbox_list_prev_frame[bbox_prev_index]["bbox"]
+                    # get pose match score
+                    pose_matching_scores[det_id, bbox_prev_index] = get_pose_matching_score(keypoints_cur_frame,
+                                                                                            keypoints_prev_frame,
+                                                                                            bbox_cur_frame,
+                                                                                            bbox_prev_frame)
 
-                    if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
-                        del bbox_list_prev_frame[match_index]
-                        del keypoints_list_prev_frame[match_index]
-                        bbox_det_dict["track_id"] = track_id
-                        keypoints_dict["track_id"] = track_id
+                    # get bbox distance score
+                    iou_scores[det_id, bbox_prev_index] = iou(bbox_cur_frame, bbox_prev_frame, xyxy=False)
 
-                    # if still can not find a match from previous frame, then assign a new id
-                    if track_id == -1 and not bbox_invalid(bbox_det_dict["bbox"]):
-                        bbox_det_dict["track_id"] = next_id
-                        keypoints_dict["track_id"] = next_id
-                        next_id += 1
-
-            # update frame
+            ###########################
+            ## 根据指标来选择当前帧的框 ##
+            ###########################
+            bbox_dets_list, keypoints_list = select_bbox_by_criterion(bbox_dets_list, keypoints_list, confidence_scores,
+                                                                      pose_matching_scores, iou_scores, prev_track_ids)
+            print("Final save bbox number: {} ".format(len(bbox_dets_list)))
+            print("image path:{}".format(img_path))
             bbox_dets_list_list.append(bbox_dets_list)
             keypoints_list_list.append(keypoints_list)
-            frame_prev = frame_cur
-            print("This is KeyFrame")
-        else:
-            ''' NOT KEYFRAME: multi-target pose tracking '''
-            bbox_dets_list_next = []
-            keypoints_list_next = []
-            print("This is NOT KeyFrame")
-            num_dets = len(keypoints_list)
-            total_num_PERSONS += num_dets
 
-            if num_dets == 0:
-                flag_mandatory_keyframe = True
-
-            for det_id in range(num_dets):
-                keypoints = keypoints_list[det_id]["keypoints"]
-
-                # for non-keyframes, the tracked target preserves its track_id
-                track_id = keypoints_list[det_id]["track_id"]
-
-                # next frame bbox
-                bbox_det_next = get_bbox_from_keypoints(keypoints)
-                if bbox_det_next[2] == 0 or bbox_det_next[3] == 0:
-                    bbox_det_next = [0, 0, 2, 2]
-                    total_num_PERSONS -= 1
-                assert (bbox_det_next[2] != 0 and bbox_det_next[3] != 0)  # width and height must not be zero
-                bbox_det_dict_next = {"img_id": img_id,
-                                      "det_id": det_id,
-                                      "track_id": track_id,
-                                      "imgpath": img_path,
-                                      "bbox": bbox_det_next}
-
-                # next frame keypoints
-                st_time_pose = time.time()
-                keypoints_next = inference_keypoints(pose_estimator, bbox_det_dict_next)[0]["keypoints"]
-                end_time_pose = time.time()
-                total_time_POSE += (end_time_pose - st_time_pose)
-                # print("time for pose estimation: ", (end_time_pose - st_time_pose))
-
-                # check whether the target is lost
-                target_lost = is_target_lost(keypoints_next)
-
-                if target_lost is False:
-                    bbox_dets_list_next.append(bbox_det_dict_next)
-                    keypoints_dict_next = {"img_id": img_id,
-                                           "det_id": det_id,
-                                           "track_id": track_id,
-                                           "imgpath": img_path,
-                                           "keypoints": keypoints_next}
-                    keypoints_list_next.append(keypoints_dict_next)
-
-                else:
-                    # remove this bbox, do not register its keypoints
-                    bbox_det_dict_next = {"img_id": img_id,
-                                          "det_id": det_id,
-                                          "track_id": None,
-                                          "imgpath": img_path,
-                                          "bbox": [0, 0, 2, 2]}
-                    bbox_dets_list_next.append(bbox_det_dict_next)
-
-                    keypoints_null = 45 * [0]
-                    keypoints_dict_next = {"img_id": img_id,
-                                           "det_id": det_id,
-                                           "track_id": None,
-                                           "imgpath": img_path,
-                                           "keypoints": []}
-                    keypoints_list_next.append(keypoints_dict_next)
-                    print("Target lost. Process this frame again as keyframe. \n\n\n")
-                    flag_mandatory_keyframe = True
-
-                    total_num_PERSONS -= 1
-                    ## Re-process this frame by treating it as a keyframe
-                    if img_id not in [0]:
-                        img_id -= 1
-                    break
-
-            # update frame
-            if flag_mandatory_keyframe is False:
-                bbox_dets_list = bbox_dets_list_next
-                keypoints_list = keypoints_list_next
-                bbox_dets_list_list.append(bbox_dets_list)
-                keypoints_list_list.append(keypoints_list)
-                frame_prev = frame_cur
+            # ##############################
+            # ## update bbox information ##
+            # ##############################
+            # temp_bbox_dets_list = []  ## temp 临时存储
+            # temp_keypoints_list = []  ## temp 临时存储
+            # for index, bbox_save_index in enumerate(bbox_save_index_list):
+            #     if bbox_save_index == None:
+            #         continue
+            #     bbox_det_dict['track_id'] = index
+            #     bbox_det_dict = bbox_dets_list[bbox_save_index]
+            #     keypoints_dict = keypoints_list[bbox_save_index]
+            #     bbox_det_dict['det_id'] = index
+            #     keypoints_dict['track_id'] = index
+            #     keypoints_dict['det_id'] = index
+            #
+            #     temp_bbox_dets_list.append(bbox_det_dict)
+            #     temp_keypoints_list.append(keypoints_dict)
 
     ''' 1. statistics: get total time for lighttrack processing'''
     end_time_total = time.time()
@@ -363,10 +337,19 @@ def light_track(pose_estimator,
         img_paths = get_immediate_childfile_paths(visualize_folder)
         avg_fps = total_num_FRAMES / total_time_ALL
         # make_video_from_images(img_paths, output_video_path, fps=avg_fps, size=None, is_color=True, format="XVID")
-        visualizer.make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True, format="XVID")
+        visualizer.make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True,
+                                          format="XVID")
 
 
-def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame, keypoints_list_prev_frame):
+def distance_between_two_boxs(boxA, boxB):
+    x1, y1, _, _ = boxA
+    x2, y2, _, _ = boxB
+    distance = math.sqrt(math.pow(x2 - x1, 2) + math.pow(y2 - y1, 2))
+    return distance
+
+
+def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
+                      keypoints_list_prev_frame):
     assert (len(bbox_list_prev_frame) == len(keypoints_list_prev_frame))
 
     min_index = None
@@ -381,7 +364,8 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
         # check the pose matching score
         keypoints_dict = keypoints_list_prev_frame[det_index]
         keypoints_prev_frame = keypoints_dict["keypoints"]
-        pose_matching_score = get_pose_matching_score(keypoints_cur_frame, keypoints_prev_frame, bbox_cur_frame,
+        pose_matching_score = get_pose_matching_score(keypoints_cur_frame, keypoints_prev_frame,
+                                                      bbox_cur_frame,
                                                       bbox_prev_frame)
 
         if pose_matching_score <= pose_matching_threshold and pose_matching_score <= min_matching_score:
@@ -477,21 +461,36 @@ def is_target_lost(keypoints, method="max_average"):
         return False
 
 
-def iou(boxA, boxB):
+def iou(boxA, boxB, xyxy=True):
     # box: (x1, y1, x2, y2)
     # determine the (x, y)-coordinates of the intersection rectangle
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
+    if not xyxy:
+        # 如果是xy wh那么要转换数据 - xy是最小坐标
+        b1_x1, b1_x2 = boxA[0], boxA[0] + boxA[2]
+        b1_y1, b1_y2 = boxA[1], boxA[1] + boxA[3]
+        b2_x1, b2_x2 = boxB[0], boxB[0] + boxB[2]
+        b2_y1, b2_y2 = boxB[1], boxB[1] + boxB[3]
+        xA = max(b1_x1, b2_x1)
+        yA = max(b1_y1, b2_y1)
+        xB = min(b1_x2, b2_x2)
+        yB = min(b1_y2, b2_y2)
+    else:
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
 
     # compute the area of intersection rectangle
     interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
 
     # compute the area of both the prediction and ground-truth
     # rectangles
-    boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
-    boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+    if not xyxy:
+        boxAArea = (boxA[2] + 1) * (boxA[3] + 1)
+        boxBArea = (boxB[2] + 1) * (boxB[3] + 1)
+    else:
+        boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)  # w×h
+        boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)  # w×h
 
     # compute the intersection over union by taking the intersection
     # area and dividing it by the sum of prediction + ground-truth
@@ -512,7 +511,7 @@ def get_bbox_from_keypoints(keypoints_python_data):
     for keypoint_id in range(int(num_keypoints / 3)):
         x = keypoints_python_data[3 * keypoint_id]
         y = keypoints_python_data[3 * keypoint_id + 1]
-        vis = keypoints_python_data[3 * keypoint_id + 2]
+        vis = keypoints_python_data[3 * keypoint_id + 2]  # 是否可见
         if vis != 0 and vis != 3:
             x_list.append(x)
             y_list.append(y)
@@ -567,7 +566,9 @@ def inference_keypoints(pose_estimator, test_data):
         test_data = [test_data]
 
     # crop and detect pose
-    pose_heatmaps, details, cls_skeleton, crops, start_id, end_id = get_pose_from_bbox(pose_estimator, test_data, cfg)
+    pose_heatmaps, details, cls_skeleton, crops, start_id, end_id = get_pose_from_bbox(pose_estimator,
+                                                                                       test_data,
+                                                                                       cfg)
     # get keypoint positions from pose
     keypoints = get_keypoints_from_pose(pose_heatmaps, details, cls_skeleton, crops, start_id, end_id)
     # dump results
@@ -578,7 +579,8 @@ def inference_keypoints(pose_estimator, test_data):
 def apply_nms(cls_dets, nms_method, nms_thresh):
     # nms and filter
     keep = np.where((cls_dets[:, 4] >= min_scores) &
-                    ((cls_dets[:, 3] - cls_dets[:, 1]) * (cls_dets[:, 2] - cls_dets[:, 0]) >= min_box_size))[0]
+                    ((cls_dets[:, 3] - cls_dets[:, 1]) * (
+                            cls_dets[:, 2] - cls_dets[:, 0]) >= min_box_size))[0]
     cls_dets = cls_dets[keep]
     if len(cls_dets) > 0:
         if nms_method == 'nms':
@@ -592,7 +594,8 @@ def apply_nms(cls_dets, nms_method, nms_thresh):
 
 
 def get_pose_from_bbox(pose_estimator, test_data, cfg):
-    cls_skeleton = np.zeros((len(test_data), cfg.nr_skeleton, 3))
+    cls_skeleton = np.zeros(
+        (len(test_data), cfg.nr_skeleton, 3))  # cfg.nr_skeleton=joint number.  size=number*3
     crops = np.zeros((len(test_data), 4))
 
     batch_size = 1
@@ -644,7 +647,8 @@ def get_keypoints_from_pose(pose_heatmaps, details, cls_skeleton, crops, start_i
             res[test_image_id - start_id, w] /= np.amax(res[test_image_id - start_id, w])
 
         border = 10
-        dr = np.zeros((cfg.nr_skeleton, cfg.output_shape[0] + 2 * border, cfg.output_shape[1] + 2 * border))
+        dr = np.zeros(
+            (cfg.nr_skeleton, cfg.output_shape[0] + 2 * border, cfg.output_shape[1] + 2 * border))
         dr[:, border:-border, border:-border] = res[test_image_id - start_id][:cfg.nr_skeleton].copy()
 
         for w in range(cfg.nr_skeleton):
@@ -673,10 +677,10 @@ def get_keypoints_from_pose(pose_heatmaps, details, cls_skeleton, crops, start_i
         # map back to original images
         crops[test_image_id, :] = details[test_image_id - start_id, :]
         for w in range(cfg.nr_skeleton):
-            cls_skeleton[test_image_id, w, 0] = cls_skeleton[test_image_id, w, 0] / cfg.data_shape[1] * (
-                    crops[test_image_id][2] - crops[test_image_id][0]) + crops[test_image_id][0]
-            cls_skeleton[test_image_id, w, 1] = cls_skeleton[test_image_id, w, 1] / cfg.data_shape[0] * (
-                    crops[test_image_id][3] - crops[test_image_id][1]) + crops[test_image_id][1]
+            cls_skeleton[test_image_id, w, 0] = cls_skeleton[test_image_id, w, 0] / cfg.data_shape[
+                1] * (crops[test_image_id][2] - crops[test_image_id][0]) + crops[test_image_id][0]
+            cls_skeleton[test_image_id, w, 1] = cls_skeleton[test_image_id, w, 1] / cfg.data_shape[
+                0] * (crops[test_image_id][3] - crops[test_image_id][1]) + crops[test_image_id][1]
     return cls_skeleton
 
 
@@ -686,7 +690,8 @@ def prepare_results(test_data, cls_skeleton, cls_dets):
     cls_scores = 1
     dump_results = []
     cls_skeleton = np.concatenate(
-        [cls_skeleton.reshape(-1, cfg.nr_skeleton * 3), (cls_scores * cls_partsco.mean(axis=1))[:, np.newaxis]],
+        [cls_skeleton.reshape(-1, cfg.nr_skeleton * 3),
+         (cls_scores * cls_partsco.mean(axis=1))[:, np.newaxis]],
         axis=1)
     for i in range(len(cls_skeleton)):
         result = dict(image_id=test_data['img_id'],
@@ -728,13 +733,13 @@ def pose_to_standard_mot(keypoints_list_list, dets_list_list):
         openSVAI_python_data["image"] = img_info
 
         num_dets = len(dets_list)
-        num_keypoints = len(keypoints_list)  # number of persons, not number of keypoints for each person
+        num_keypoints = len(
+            keypoints_list)  # number of persons, not number of keypoints for each person
         candidate_list = []
 
         for j in range(num_dets):
             keypoints_dict = keypoints_list[j]
             dets_dict = dets_list[j]
-
             img_id = keypoints_dict["img_id"]
             det_id = keypoints_dict["det_id"]
             track_id = keypoints_dict["track_id"]
@@ -784,25 +789,35 @@ def bbox_invalid(bbox):
 
 
 if __name__ == '__main__':
+
     global args
+    ## from detector.detector_yolov3 import *
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/video.mp4")
-    # video_path不是video格式(mp4...)结尾就无效
-    parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/0002.mp")
-    parser.add_argument('--images_path', '-i', type=str, dest='images_path', default="data/demo/06818_mpii")
-    parser.add_argument('--model', '-m', type=str, dest='test_model', default="weights/mobile-deconv/snapshot_296.ckpt")
+    parser.add_argument('--video_path', '-v', type=str, dest='video_path',
+                        # default="data/demo/video.mp4")
+                        default="data/demo/0002.mp")
+    parser.add_argument('--images_path', '-i', type=str, dest='images_path',
+                        # default="data/demo/video.mp4")
+                        # default="data/demo/000001_bonn")
+                        default="data/demo/06818_mpii")
+    parser.add_argument('--model', '-m', type=str, dest='test_model',
+                        default="weights/mobile-deconv/snapshot_296.ckpt")
+
     args = parser.parse_args()
     args.bbox_thresh = 0.4
+
     # initialize pose estimator
     initialize_parameters()
     pose_estimator = Tester(Network(), cfg)
     pose_estimator.load_weights(args.test_model)
 
     video_path = args.video_path
+
     images_path = args.images_path
-    visualize_folder = "data/demo/visualize/original"
-    output_video_folder = "data/demo/videos/original"
-    output_json_folder = "data/demo/jsons/original"
+
+    visualize_folder = "data/demo/visualize/my"
+    output_video_folder = "data/demo/videos/my"
+    output_json_folder = "data/demo/jsons/my"
 
     if is_video(video_path):
         video_to_images(video_path)
@@ -826,13 +841,15 @@ if __name__ == '__main__':
         print("total_time_ALL: {:.2f}s".format(total_time_ALL))
         print("total_time_DET: {:.2f}s".format(total_time_DET))
         print("total_time_POSE: {:.2f}s".format(total_time_POSE))
-        print("total_time_LIGHTTRACK: {:.2f}s".format(total_time_ALL - total_time_DET - total_time_POSE))
+        print(
+            "total_time_LIGHTTRACK: {:.2f}s".format(total_time_ALL - total_time_DET - total_time_POSE))
         print("total_num_FRAMES: {:d}".format(total_num_FRAMES))
         print("total_num_PERSONS: {:d}\n".format(total_num_PERSONS))
         print("Average FPS: {:.2f}fps".format(total_num_FRAMES / total_time_ALL))
         print("Average FPS excluding Pose Estimation: {:.2f}fps".format(
             total_num_FRAMES / (total_time_ALL - total_time_POSE)))
-        print("Average FPS excluding Detection: {:.2f}fps".format(total_num_FRAMES / (total_time_ALL - total_time_DET)))
+        print("Average FPS excluding Detection: {:.2f}fps".format(
+            total_num_FRAMES / (total_time_ALL - total_time_DET)))
         print("Average FPS for framework only: {:.2f}fps".format(
             total_num_FRAMES / (total_time_ALL - total_time_DET - total_time_POSE)))
     else:
@@ -866,5 +883,4 @@ if __name__ == '__main__':
             total_num_FRAMES / (total_time_ALL - total_time_DET)))
         print("Average FPS for framework only: {:.2f}fps".format(
             total_num_FRAMES / (total_time_ALL - total_time_DET - total_time_POSE)))
-        # print("Video does not exist.")
         # print("Video does not exist.")

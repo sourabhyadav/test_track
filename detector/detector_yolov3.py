@@ -148,6 +148,7 @@ def inference_yolov3_from_img(img):
 
 
 if __name__ == "__main__":
-    img_path = "/export/guanghan/PyTorch-YOLOv3/data/samples/messi.jpg"
+    # img_path = "/export/guanghan/PyTorch-YOLOv3/data/samples/messi.jpg"
+    img_path = "/media/D/light-track/data/demo/0002/frame00348.jpg"
     human_candidates = inference_yolov3(img_path)
     print("human_candidates:", human_candidates)

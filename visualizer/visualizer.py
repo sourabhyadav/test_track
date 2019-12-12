@@ -16,6 +16,12 @@ from keypoint_visualizer import *
 draw_threshold = 0.4
 
 
+####  add
+def draw_bbox_from_python_data(img, bbox):
+    img = draw_bbox(img, bbox, 0, classes, track_id=0)
+    return img
+
+
 def show_all_from_standard_json(json_file_path, classes, joint_pairs, joint_names, img_folder_path=None,
                                 output_folder_path=None, flag_track=False):
     # Visualizing: Detection + Pose Estimation

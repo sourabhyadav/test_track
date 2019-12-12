@@ -17,7 +17,7 @@ import tensorflow as tf
 from network_mobile_deconv import Network
 
 # detector utils
-from detector.detector_yolov3 import *
+from detector.detector_yolov3 import *  ##
 
 # pose estimation utils
 from HPE.dataset import Preprocessing
@@ -48,6 +48,8 @@ from utils_io_folder import *
 from visualizer import *
 from visualizer import visualizer
 
+from utils_choose import *
+
 # from visualizer import visualizer
 
 # from .utils.utils_io_file import *
@@ -58,6 +60,13 @@ flag_nms = False  # Default is False, unless you know what you are doing
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+################
+##单纯为了Debug
+
+image_crop_output_path = '/media/D/light-track/data/demo/crop'
+
+
+################
 
 def initialize_parameters():
     global video_name, img_id
@@ -109,7 +118,7 @@ def light_track(pose_estimator,
     total_num_FRAMES = num_imgs
 
     # 有gt的的bbox
-    gt_bbox_img_id_list = [0, 10, 20, 30]
+    gt_bbox_img_id_list = [0]
 
     while img_id < num_imgs - 1:
         img_id += 1
@@ -159,7 +168,9 @@ def light_track(pose_estimator,
             # 当前帧非gt帧
             # perform detection at keyframes
             st_time_detection = time.time()
+            # human_candidates  ( center_x,center_y,w,h)
             human_candidates, confidence_scores = inference_yolov3_v1(img_path)  # 拿到bbox
+
             end_time_detection = time.time()
             total_time_DET += (end_time_detection - st_time_detection)
 
@@ -179,7 +190,7 @@ def light_track(pose_estimator,
                 bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
                 # update current frame bbox
                 bbox_det_dict = {"img_id": img_id,
-                                 "det_id": None,
+                                 "det_id": det_id,
                                  "imgpath": img_path,
                                  "track_id": None,
                                  "bbox": bbox_det}
@@ -191,7 +202,7 @@ def light_track(pose_estimator,
                 total_time_POSE += (end_time_pose - st_time_pose)
 
                 keypoints_dict = {"img_id": img_id,
-                                  "det_id": None,
+                                  "det_id": det_id,
                                   "imgpath": img_path,
                                   "track_id": None,
                                   "keypoints": keypoints}
@@ -202,50 +213,98 @@ def light_track(pose_estimator,
             bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
             keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
 
+            ############ 裁剪
+            if img_id in [34, 35, 36, 37, 38]:
+                cnt = 0
+                for bbox_info in bbox_list_prev_frame:
+                    bbox_det = bbox_info['bbox']
+                    image_path = bbox_info['imgpath']
+                    frame_name = os.path.basename(image_path)
+                    frame_name = frame_name.split('.')[0]
+                    video_name = os.path.basename(image_folder)
+                    image = cv2.imread(image_path)
+                    bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
+                    bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, 0.1)
+                    bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+                    x1, y1, w, h = max(int(bbox_det[0]), 0), max(int(bbox_det[1]), 0), bbox_det[2], bbox_det[3]
+                    ### 得到裁剪后的图
+                    cropped_image = image[y1:(y1 + h), x1:(x1 + w)]
+                    create_folder(os.path.join(image_crop_output_path, video_name))
+                    cropped_image_path = os.path.join(image_crop_output_path, video_name,
+                                                      '{}-{:0>3d}.jpg'.format(frame_name, cnt))
+                    cv2.imwrite(cropped_image_path, cropped_image)
+                    ### 找bbox
+                    crop_human_candidates, _ = inference_yolov3_v1(cropped_image_path)
+                    for det_id in range(len(crop_human_candidates)):
+                        bbox_det = crop_human_candidates[det_id]
+                        ### 画bbox
+                        # cropped_bbox_image = visualizer.draw_bbox_from_python_data(cropped_image, bbox_det)
+                        cropped_bbox_image = cv2.rectangle(cropped_image.copy(), (int(bbox_det[0]), int(bbox_det[1])),
+                                                           (int(bbox_det[0] + bbox_det[2]),
+                                                            int(bbox_det[1] + bbox_det[3])),
+                                                           (255, 0, 255), thickness=3)
+                        cropped_image_bbox_path = os.path.join(image_crop_output_path, video_name,
+                                                               '{}-{:0>3d}-{:0>3d}.jpg'.format(frame_name, cnt, det_id))
+                        cv2.imwrite(cropped_image_bbox_path, cropped_bbox_image)
+                    cnt += 1
+
+            ##############
+
             num_bbox_prev_frame = len(bbox_list_prev_frame)
 
             # 获取到三个指标的信息
             confidence_scores = np.array(confidence_scores)
             confidence_scores = confidence_scores[:, np.newaxis]
             pose_matching_scores = np.zeros([num_dets, num_bbox_prev_frame], dtype=float)
-            distance_scores = np.zeros([num_dets, num_bbox_prev_frame], dtype=float)
+            iou_scores = np.ones([num_dets, num_bbox_prev_frame], dtype=float)
+            prev_track_ids = []
+            for bbox_prev_index in range(num_bbox_prev_frame):
+                # 上一帧中包含的trackIds
+                track_id = keypoints_list_prev_frame[bbox_prev_index]["track_id"]
+                prev_track_ids.append(track_id)
             for det_id in range(num_dets):
-                for bbox_prev_id in range(num_bbox_prev_frame):
+                for bbox_prev_index in range(num_bbox_prev_frame):
                     keypoints_cur_frame = keypoints_list[det_id]["keypoints"]
                     bbox_cur_frame = bbox_dets_list[det_id]["bbox"]
-                    keypoints_prev_frame = keypoints_list_prev_frame[bbox_prev_id]["keypoints"]
-                    bbox_prev_frame = bbox_list_prev_frame[bbox_prev_id]["bbox"]
+
+                    keypoints_prev_frame = keypoints_list_prev_frame[bbox_prev_index]["keypoints"]
+                    bbox_prev_frame = bbox_list_prev_frame[bbox_prev_index]["bbox"]
                     # get pose match score
-                    pose_matching_scores[det_id, bbox_prev_id] = get_pose_matching_score(keypoints_cur_frame,
-                                                                                         keypoints_prev_frame,
-                                                                                         bbox_cur_frame,
-                                                                                         bbox_prev_frame)
+                    pose_matching_scores[det_id, bbox_prev_index] = get_pose_matching_score(keypoints_cur_frame,
+                                                                                            keypoints_prev_frame,
+                                                                                            bbox_cur_frame,
+                                                                                            bbox_prev_frame)
+
                     # get bbox distance score
-                    distance_scores[det_id, bbox_prev_id] = distance_between_two_boxs(bbox_cur_frame, bbox_prev_frame)
+                    iou_scores[det_id, bbox_prev_index] = iou(bbox_cur_frame, bbox_prev_frame, xyxy=False)
 
             ###########################
             ## 根据指标来选择当前帧的框 ##
             ###########################
-            bbox_save_index_list = select_bbox_by_criterion(confidence_scores, pose_matching_scores, distance_scores)
-            ##############################
-            ## update bbox information ##
-            ##############################
-            temp_bbox_dets_list = []  ## temp 临时存储
-            temp_keypoints_list = []  ## temp 临时存储
-            for index, bbox_save_index in enumerate(bbox_save_index_list):
-                bbox_det_dict = bbox_dets_list[bbox_save_index]
-                keypoints_dict = keypoints_list[bbox_save_index]
+            bbox_dets_list, keypoints_list = select_bbox_by_criterion(bbox_dets_list, keypoints_list, confidence_scores,
+                                                                      pose_matching_scores, iou_scores, prev_track_ids)
+            print("Final save bbox number: {} ".format(len(bbox_dets_list)))
+            print("image path:{}".format(img_path))
+            bbox_dets_list_list.append(bbox_dets_list)
+            keypoints_list_list.append(keypoints_list)
 
-                bbox_det_dict['track_id'] = index
-                bbox_det_dict['det_id'] = index
-                keypoints_dict['track_id'] = index
-                keypoints_dict['det_id'] = index
-
-                temp_bbox_dets_list.append(bbox_det_dict)
-                temp_keypoints_list.append(keypoints_dict)
-
-            bbox_dets_list_list.append(temp_bbox_dets_list)
-            keypoints_list_list.append(temp_keypoints_list)
+            # ##############################
+            # ## update bbox information ##
+            # ##############################
+            # temp_bbox_dets_list = []  ## temp 临时存储
+            # temp_keypoints_list = []  ## temp 临时存储
+            # for index, bbox_save_index in enumerate(bbox_save_index_list):
+            #     if bbox_save_index == None:
+            #         continue
+            #     bbox_det_dict['track_id'] = index
+            #     bbox_det_dict = bbox_dets_list[bbox_save_index]
+            #     keypoints_dict = keypoints_list[bbox_save_index]
+            #     bbox_det_dict['det_id'] = index
+            #     keypoints_dict['track_id'] = index
+            #     keypoints_dict['det_id'] = index
+            #
+            #     temp_bbox_dets_list.append(bbox_det_dict)
+            #     temp_keypoints_list.append(keypoints_dict)
 
     ''' 1. statistics: get total time for lighttrack processing'''
     end_time_total = time.time()
@@ -276,39 +335,7 @@ def light_track(pose_estimator,
         avg_fps = total_num_FRAMES / total_time_ALL
         # make_video_from_images(img_paths, output_video_path, fps=avg_fps, size=None, is_color=True, format="XVID")
         visualizer.make_video_from_images(img_paths, output_video_path, fps=25, size=None, is_color=True,
-                               format="XVID")
-
-
-def select_bbox_by_criterion(confidence_scores, pose_matching_scores, distance_scores):
-    '''
-    根据三个得分来选择
-    :param confidence_scores:  [cur_bbox_number,confidence]
-    :param pose_matching_scores: [cur_bbox_number,pose_match_score_to_prev]
-        姿态匹配值，值越小越匹配。 range [0,1]
-    :param distance_scores: [cur_bbox_number,distance_score_to_prev]
-        距离值，值越小越接近
-    :return: 返回一个numpy.array,长度一般来说等于prev frame 的bbox个数。
-        [pre_bbox1_in_cur_frame_bbox_index,pre_bbox2_in_cur_frame_bbox_index,....,pre_bboxN_in_cur_frame_bbox_index]
-    '''
-    assert confidence_scores.shape[0] == pose_matching_scores.shape[0] == distance_scores.shape[0] and \
-           pose_matching_scores.shape[1] == \
-           distance_scores.shape[1]
-    cur_bbox_number, prev_bbox_number = pose_matching_scores.shape
-
-    scale_confidence = 1
-    scale_pose = -1
-    scale_dis = -0.1
-    # total_score = np.zeros_like[pose_matching_scores.shape]
-    total_score = scale_confidence * confidence_scores + scale_pose * pose_matching_scores + scale_dis * distance_scores
-
-    ### TODO 突然有一帧的时候，没检测到。
-    max_index = np.argmax(total_score, axis=0)  # 直接找最大的下标
-    target_lost_thread = 4
-
-    # print('scores',total_score[max_index[0]][0],total_score[max_index[1]][1])
-    # print(max_index)
-
-    return max_index
+                                          format="XVID")
 
 
 def distance_between_two_boxs(boxA, boxB):
@@ -431,21 +458,36 @@ def is_target_lost(keypoints, method="max_average"):
         return False
 
 
-def iou(boxA, boxB):
+def iou(boxA, boxB, xyxy=True):
     # box: (x1, y1, x2, y2)
     # determine the (x, y)-coordinates of the intersection rectangle
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
+    if not xyxy:
+        # 如果是xy wh那么要转换数据 - xy是最小坐标
+        b1_x1, b1_x2 = boxA[0], boxA[0] + boxA[2]
+        b1_y1, b1_y2 = boxA[1], boxA[1] + boxA[3]
+        b2_x1, b2_x2 = boxB[0], boxB[0] + boxB[2]
+        b2_y1, b2_y2 = boxB[1], boxB[1] + boxB[3]
+        xA = max(b1_x1, b2_x1)
+        yA = max(b1_y1, b2_y1)
+        xB = min(b1_x2, b2_x2)
+        yB = min(b1_y2, b2_y2)
+    else:
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
 
     # compute the area of intersection rectangle
     interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
 
     # compute the area of both the prediction and ground-truth
     # rectangles
-    boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
-    boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+    if not xyxy:
+        boxAArea = (boxA[2] + 1) * (boxA[3] + 1)
+        boxBArea = (boxB[2] + 1) * (boxB[3] + 1)
+    else:
+        boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)  # w×h
+        boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)  # w×h
 
     # compute the intersection over union by taking the intersection
     # area and dividing it by the sum of prediction + ground-truth
@@ -746,12 +788,18 @@ def bbox_invalid(bbox):
 if __name__ == '__main__':
 
     global args
+    ## from detector.detector_yolov3 import *
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_path', '-v', type=str, dest='video_path',
                         # default="data/demo/video.mp4")
-                        default="data/demo/0002.mp4")
+                        default="data/demo/0002.mp")
+    parser.add_argument('--images_path', '-i', type=str, dest='images_path',
+                        # default="data/demo/video.mp4")
+                        # default="data/demo/000001_bonn")
+                        default="data/demo/06818_mpii")
     parser.add_argument('--model', '-m', type=str, dest='test_model',
                         default="weights/mobile-deconv/snapshot_296.ckpt")
+
     args = parser.parse_args()
     args.bbox_thresh = 0.4
 
@@ -761,19 +809,21 @@ if __name__ == '__main__':
     pose_estimator.load_weights(args.test_model)
 
     video_path = args.video_path
-    visualize_folder = "data/demo/visualize"
-    output_video_folder = "data/demo/videos"
-    output_json_folder = "data/demo/jsons"
 
-    video_name = os.path.basename(video_path)
-    video_name = os.path.splitext(video_name)[0]
-    image_folder = os.path.join("data/demo", video_name)
-    visualize_folder = os.path.join(visualize_folder, video_name)
-    output_json_path = os.path.join(output_json_folder, video_name + ".json")
-    output_video_path = os.path.join(output_video_folder, video_name + "_out.mp4")
+    images_path = args.images_path
+
+    visualize_folder = "data/demo/visualize/my"
+    output_video_folder = "data/demo/videos/my"
+    output_json_folder = "data/demo/jsons/my"
 
     if is_video(video_path):
         video_to_images(video_path)
+        video_name = os.path.basename(video_path)
+        video_name = os.path.splitext(video_name)[0]
+        image_folder = os.path.join("data/demo", video_name)
+        visualize_folder = os.path.join(visualize_folder, video_name)
+        output_json_path = os.path.join(output_json_folder, video_name + ".json")
+        output_video_path = os.path.join(output_video_folder, video_name + "_out.mp4")
         create_folder(visualize_folder)
         create_folder(output_video_folder)
         create_folder(output_json_folder)
@@ -800,7 +850,34 @@ if __name__ == '__main__':
         print("Average FPS for framework only: {:.2f}fps".format(
             total_num_FRAMES / (total_time_ALL - total_time_DET - total_time_POSE)))
     else:
+        video_name = os.path.basename(images_path)
+        image_folder = os.path.join("data/demo", video_name)
+        visualize_folder = os.path.join(visualize_folder, video_name)
+        output_json_path = os.path.join(output_json_folder, video_name + ".json")
+        output_video_path = os.path.join(output_video_folder, video_name + "_out.mp4")
+        create_folder(visualize_folder)
+        create_folder(output_video_folder)
+        create_folder(output_json_folder)
+
         light_track(pose_estimator,
                     image_folder, output_json_path,
                     visualize_folder, output_video_path)
-        print("Video does not exist.")
+
+        print("Finished video {}".format(output_video_path))
+
+        ''' Display statistics '''
+        print("total_time_ALL: {:.2f}s".format(total_time_ALL))
+        print("total_time_DET: {:.2f}s".format(total_time_DET))
+        print("total_time_POSE: {:.2f}s".format(total_time_POSE))
+        print(
+            "total_time_LIGHTTRACK: {:.2f}s".format(total_time_ALL - total_time_DET - total_time_POSE))
+        print("total_num_FRAMES: {:d}".format(total_num_FRAMES))
+        print("total_num_PERSONS: {:d}\n".format(total_num_PERSONS))
+        print("Average FPS: {:.2f}fps".format(total_num_FRAMES / total_time_ALL))
+        print("Average FPS excluding Pose Estimation: {:.2f}fps".format(
+            total_num_FRAMES / (total_time_ALL - total_time_POSE)))
+        print("Average FPS excluding Detection: {:.2f}fps".format(
+            total_num_FRAMES / (total_time_ALL - total_time_DET)))
+        print("Average FPS for framework only: {:.2f}fps".format(
+            total_num_FRAMES / (total_time_ALL - total_time_DET - total_time_POSE)))
+        # print("Video does not exist.")
