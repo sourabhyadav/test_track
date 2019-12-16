@@ -48,7 +48,7 @@ def select_bbox_by_criterion(bbox_dets_list, keypoints_list, confidence_scores, 
     # 如果其 pose match score 大于阈值，则设设置为无效
     # 如果其 iou score 小于阈值，则设置为无效
     # total_score = np.where(pose_matching_scores < 0.4, total_score,invaild_flag) # 不一定可靠
-    # total_score = np.where(iou_scores > 0.4, total_score,invaild_flag)
+    total_score = np.where(iou_scores > 0.5, total_score,invaild_flag)
 
     while cnt < prev_bbox_number and np.max(total_score) != invaild_flag:
         argmax = np.argmax(total_score)  # 按行优先拿到下标

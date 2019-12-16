@@ -788,8 +788,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/video.mp4")
     # video_path不是video格式(mp4...)结尾就无效
-    parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/0002.mp")
-    parser.add_argument('--images_path', '-i', type=str, dest='images_path', default="data/demo/06818_mpii")
+    parser.add_argument('--video_path', '-v', type=str, dest='video_path', default="data/demo/0003.mp4")
+    parser.add_argument('--images_path', '-i', type=str, dest='images_path', default="data/demo/000001_bonn")
+    # parser.add_argument('--images_path', '-i', type=str, dest='images_path', default="data/demo/06818_mpii")
     parser.add_argument('--model', '-m', type=str, dest='test_model', default="weights/mobile-deconv/snapshot_296.ckpt")
     args = parser.parse_args()
     args.bbox_thresh = 0.4
@@ -803,6 +804,30 @@ if __name__ == '__main__':
     visualize_folder = "data/demo/visualize/original"
     output_video_folder = "data/demo/videos/original"
     output_json_folder = "data/demo/jsons/original"
+
+
+    ##
+    list_video = ['0004.mp4', '0005.mp4', '0006.mp4', '0007.mp4', '0008.mp4', '0009.mp4', '0010.mp4', '0011.mp4', '0012.mp4']
+    list_video_path = [os.path.join('data/demo', video) for video in list_video]
+
+    for video_path_i in list_video_path:
+        video_path = video_path_i
+        video_to_images(video_path)
+        video_name = os.path.basename(video_path)
+        video_name = os.path.splitext(video_name)[0]
+        image_folder = os.path.join("data/demo", video_name)
+        visualize_folder = os.path.join(visualize_folder, video_name)
+        output_json_path = os.path.join(output_json_folder, video_name + ".json")
+        output_video_path = os.path.join(output_video_folder, video_name + "_out.mp4")
+        create_folder(visualize_folder)
+        create_folder(output_video_folder)
+        create_folder(output_json_folder)
+
+        light_track(pose_estimator,
+                    image_folder, output_json_path,
+                    visualize_folder, output_video_path)
+    sys.exit()
+
 
     if is_video(video_path):
         video_to_images(video_path)

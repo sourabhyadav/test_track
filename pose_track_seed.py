@@ -14,7 +14,7 @@ import argparse
 import cv2
 import numpy as np
 import tensorflow as tf
-
+import logging
 # import Network
 from network_mobile_deconv import Network
 
@@ -66,6 +66,29 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 ##单纯为了Debug
 
 image_crop_output_path = '/media/D/light-track/data/demo/crop'
+image_seed_crop_output_path = '/media/D/light-track/data/demo/seed_crop'
+
+import logging
+from sheen import Str, ColoredHandler
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logger.addHandler(ColoredHandler())
+
+
+# # 1.显示创建
+# logging.basicConfig(filename='logger.log', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+#
+# # 2.定义logger,设定setLevel，FileHandler，setFormatter
+# logger = logging.getLogger(__name__)  # 定义一次就可以，其他地方需要调用logger,只需要直接使用logger就行了
+# logger.setLevel(level=logging.INFO)  # 定义过滤级别
+# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#
+# console = logging.StreamHandler()  # 日志信息显示在终端terminal
+# console.setLevel(logging.INFO)
+# console.setFormatter(formatter)
+#
+# logger.addHandler(console)
 
 
 ################
@@ -100,6 +123,7 @@ def light_track(pose_estimator,
                 image_folder, output_json_path,
                 visualize_folder, output_video_path):
     global total_time_POSE, total_time_DET, total_time_ALL, total_num_FRAMES, total_num_PERSONS
+    global video_name
     ''' 1. statistics: get total time for lighttrack processing'''
     st_time_total = time.time()
 
@@ -121,6 +145,8 @@ def light_track(pose_estimator,
 
     # 有gt的的bbox
     gt_bbox_img_id_list = [0]
+
+    seed_mode = False
 
     while img_id < num_imgs - 1:
         img_id += 1
@@ -169,145 +195,210 @@ def light_track(pose_estimator,
         else:
             # 当前帧非gt帧
             # perform detection at keyframes
+            if seed_mode:
+                logger.info("img_id:{},seed_mode".format(img_id))
+                # 拿到上一帧的信息
+                bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
+                keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
+                num_prev_bbox = len(bbox_list_prev_frame)
 
-            st_time_detection = time.time()
-            # human_candidates  ( center_x,center_y,w,h)
-            human_candidates, confidence_scores = inference_yolov3_v1(img_path)  # 拿到bbox
+                my_enlarge_scale = 0.3
+                cur_image = cv2.imread(img_path)
+                cur_image_name = os.path.basename(img_path).split('.')[0]
+                cnt = 0
+                for prev_det_id in range(num_prev_bbox):
+                    prev_bbox_det = bbox_list_prev_frame[prev_det_id]["bbox"]  # xywh
+                    track_id = bbox_list_prev_frame[prev_det_id]['track_id']
+                    prev_enlarge_bbox_det = x1y1x2y2_to_xywh(
+                        enlarge_bbox(xywh_to_x1y1x2y2(prev_bbox_det), my_enlarge_scale))
+                    x1, x2, y1, y2 = max(0, int(prev_enlarge_bbox_det[0])), int(
+                        prev_enlarge_bbox_det[0] + prev_enlarge_bbox_det[2]), \
+                                     max(0, int(prev_enlarge_bbox_det[1])), int(
+                        prev_enlarge_bbox_det[1] + prev_enlarge_bbox_det[3])
+                    crop_image = cur_image[y1:y2, x1:x2].copy()
+                    crop_image_folder_path = os.path.join(image_seed_crop_output_path, video_name, cur_image_name)
+                    create_folder(crop_image_folder_path)
+                    crop_image_path = os.path.join(crop_image_folder_path, "{:0>3d}".format(prev_det_id)) + '.jpg'
+                    cv2.imwrite(crop_image_path, crop_image)
+                    # 查看裁剪后的图片
+                    human_candidates, confidence_scores = inference_yolov3_v1(crop_image_path)
+                    logger.info(confidence_scores)
+                    if len(human_candidates) > 0 and confidence_scores[0] > 0.90:
+                        selected_bbox = human_candidates[0]
+                        x1y1x2y2 = xywh_to_x1y1x2y2(selected_bbox)
+                        # 左上角坐标
+                        top_left_point_x, top_left_point_y = min(x1y1x2y2[0], x1y1x2y2[2]), min(x1y1x2y2[1],
+                                                                                                x1y1x2y2[3])
+                        best_bbox_det = [x1 + top_left_point_x, y1 + top_left_point_y, selected_bbox[2],
+                                         selected_bbox[3]]
 
-            end_time_detection = time.time()
-            total_time_DET += (end_time_detection - st_time_detection)
+                        bbox_det_dict = {"img_id": img_id,
+                                         "det_id": cnt,
+                                         "imgpath": img_path,
+                                         "track_id": track_id,
+                                         "bbox": best_bbox_det}
+                        crop_keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]["keypoints"]
+                        keypoints_dict = {"img_id": img_id,
+                                          "det_id": cnt,
+                                          "imgpath": img_path,
+                                          "track_id": track_id,
+                                          "keypoints": crop_keypoints}
+                        bbox_dets_list.append(bbox_det_dict)
+                        keypoints_list.append(keypoints_dict)
+                        cnt += 1
+                        # for proposal_det_id in range(num_proposal_dets):
+                        #     proposal_bbox_det = human_candidates[proposal_det_id]
+                        #     proposal_bbox_det_dict = {"img_id": 1,
+                        #                               "imgpath": crop_image_path, "bbox": proposal_bbox_det}
+                        #     crop_keypoints = inference_keypoints(pose_estimator, proposal_bbox_det_dict)[0][
+                        #         "keypoints"]  # keypoint_numer *(x,y,score)
+                        #     keypoint_sum_score = 0
+                        #     for i in range(len(crop_keypoints)):
+                        #         if i % 3 == 2:
+                        #             keypoint_sum_score = keypoint_sum_score + crop_keypoints[i]
+                        #     logger.info("{},{}".format(proposal_det_id, keypoint_sum_score))
+                        #
+                        #     crop_bbox_image_path = os.path.join(crop_image_folder_path,
+                        #                                         "{:0>3d}-{:0>3d}".format(prev_det_id,
+                        #                                                                  proposal_det_id)) + '.jpg'
+                        #     cv2.imwrite(crop_bbox_image_path, cropped_bbox_image)
+                assert cnt == len(bbox_dets_list)
+                print("Final save bbox number: {} ".format(len(bbox_dets_list)))
+                print("image path:{}".format(img_path))
+                bbox_dets_list_list.append(bbox_dets_list)
+                keypoints_list_list.append(keypoints_list)
+                seed_mode = False
+            else:
+                st_time_detection = time.time()
+                # human_candidates  ( center_x,center_y,w,h)
+                human_candidates, confidence_scores = inference_yolov3_v1(img_path)  # 拿到bbox
 
-            num_dets = len(human_candidates)
-            print("Keyframe: {} detections".format(num_dets))
+                end_time_detection = time.time()
+                total_time_DET += (end_time_detection - st_time_detection)
 
-            # if nothing detected at this frame
-            if num_dets <= 0:
-                ## TODO
-                break
+                num_dets = len(human_candidates)
+                print("Keyframe: {} detections".format(num_dets))
 
-            # 检测bbox的keypoints
-            for det_id in range(num_dets):
-                bbox_det = human_candidates[det_id]
-                bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
-                bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, enlarge_scale)
-                bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-                # update current frame bbox
-                bbox_det_dict = {"img_id": img_id,
-                                 "det_id": det_id,
-                                 "imgpath": img_path,
-                                 "track_id": None,
-                                 "bbox": bbox_det}
+                # if nothing detected at this frame
+                if num_dets <= 0:
+                    ## TODO
+                    break
 
-                # keypoint检测，并记录时间
-                st_time_pose = time.time()
-                keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]["keypoints"]
-                end_time_pose = time.time()
-                total_time_POSE += (end_time_pose - st_time_pose)
+                # 检测bbox的keypoints
+                for det_id in range(num_dets):
+                    bbox_det = human_candidates[det_id]
+                    bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
+                    bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, enlarge_scale)
+                    bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+                    # update current frame bbox
+                    bbox_det_dict = {"img_id": img_id,
+                                     "det_id": det_id,
+                                     "imgpath": img_path,
+                                     "track_id": None,
+                                     "bbox": bbox_det}
 
-                keypoints_dict = {"img_id": img_id,
-                                  "det_id": det_id,
-                                  "imgpath": img_path,
-                                  "track_id": None,
-                                  "keypoints": keypoints}
-                bbox_dets_list.append(bbox_det_dict)
-                keypoints_list.append(keypoints_dict)
+                    # keypoint检测，并记录时间
+                    st_time_pose = time.time()
+                    keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]["keypoints"]
+                    end_time_pose = time.time()
+                    total_time_POSE += (end_time_pose - st_time_pose)
 
-            # 拿到上一帧的信息
-            bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
-            keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
+                    keypoints_dict = {"img_id": img_id,
+                                      "det_id": det_id,
+                                      "imgpath": img_path,
+                                      "track_id": None,
+                                      "keypoints": keypoints}
+                    bbox_dets_list.append(bbox_det_dict)
+                    keypoints_list.append(keypoints_dict)
 
-            ############ 裁剪
-            # if img_id in [34, 35, 36, 37, 38]:
-            #     cnt = 0
-            #     for bbox_info in bbox_list_prev_frame:
-            #         bbox_det = bbox_info['bbox']
-            #         image_path = bbox_info['imgpath']
-            #         frame_name = os.path.basename(image_path)
-            #         frame_name = frame_name.split('.')[0]
-            #         video_name = os.path.basename(image_folder)
-            #         image = cv2.imread(image_path)
-            #         bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
-            #         bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, 0.1)
-            #         bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-            #         x1, y1, w, h = max(int(bbox_det[0]), 0), max(int(bbox_det[1]), 0), bbox_det[2], bbox_det[3]
-            #         ### 得到裁剪后的图
-            #         cropped_image = image[y1:(y1 + h), x1:(x1 + w)]
-            #         create_folder(os.path.join(image_crop_output_path, video_name))
-            #         cropped_image_path = os.path.join(image_crop_output_path, video_name,
-            #                                           '{}-{:0>3d}.jpg'.format(frame_name, cnt))
-            #         cv2.imwrite(cropped_image_path, cropped_image)
-            #         ### 找bbox
-            #         crop_human_candidates, _ = inference_yolov3_v1(cropped_image_path)
-            #         for det_id in range(len(crop_human_candidates)):
-            #             bbox_det = crop_human_candidates[det_id]
-            #             ### 画bbox
-            #             # cropped_bbox_image = visualizer.draw_bbox_from_python_data(cropped_image, bbox_det)
-            #             cropped_bbox_image = cv2.rectangle(cropped_image.copy(), (int(bbox_det[0]), int(bbox_det[1])),
-            #                                                (int(bbox_det[0] + bbox_det[2]),
-            #                                                 int(bbox_det[1] + bbox_det[3])),
-            #                                                (255, 0, 255), thickness=3)
-            #             cropped_image_bbox_path = os.path.join(image_crop_output_path, video_name,
-            #                                                    '{}-{:0>3d}-{:0>3d}.jpg'.format(frame_name, cnt, det_id))
-            #             cv2.imwrite(cropped_image_bbox_path, cropped_bbox_image)
-            #         cnt += 1
+                # 拿到上一帧的信息
+                bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
+                keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
 
-            ##############
+                ############ 裁剪
+                # if img_id in [34, 35, 36, 37, 38]:
+                #     cnt = 0
+                #     for bbox_info in bbox_list_prev_frame:
+                #         bbox_det = bbox_info['bbox']
+                #         image_path = bbox_info['imgpath']
+                #         frame_name = os.path.basename(image_path)
+                #         frame_name = frame_name.split('.')[0]
+                #         video_name = os.path.basename(image_folder)
+                #         image = cv2.imread(image_path)
+                #         bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
+                #         bbox_in_xywh = enlarge_bbox(bbox_x1y1x2y2, 0.1)
+                #         bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+                #         x1, y1, w, h = max(int(bbox_det[0]), 0), max(int(bbox_det[1]), 0), bbox_det[2], bbox_det[3]
+                #         ### 得到裁剪后的图
+                #         cropped_image = image[y1:(y1 + h), x1:(x1 + w)]
+                #         create_folder(os.path.join(image_crop_output_path, video_name))
+                #         cropped_image_path = os.path.join(image_crop_output_path, video_name,
+                #                                           '{}-{:0>3d}.jpg'.format(frame_name, cnt))
+                #         cv2.imwrite(cropped_image_path, cropped_image)
+                #         ### 找bbox
+                #         crop_human_candidates, _ = inference_yolov3_v1(cropped_image_path)
+                #         for det_id in range(len(crop_human_candidates)):
+                #             bbox_det = crop_human_candidates[det_id]
+                #             ### 画bbox
+                #             # cropped_bbox_image = visualizer.draw_bbox_from_python_data(cropped_image, bbox_det)
+                #             cropped_bbox_image = cv2.rectangle(cropped_image.copy(), (int(bbox_det[0]), int(bbox_det[1])),
+                #                                                (int(bbox_det[0] + bbox_det[2]),
+                #                                                 int(bbox_det[1] + bbox_det[3])),
+                #                                                (255, 0, 255), thickness=3)
+                #             cropped_image_bbox_path = os.path.join(image_crop_output_path, video_name,
+                #                                                    '{}-{:0>3d}-{:0>3d}.jpg'.format(frame_name, cnt, det_id))
+                #             cv2.imwrite(cropped_image_bbox_path, cropped_bbox_image)
+                #         cnt += 1
 
-            num_bbox_prev_frame = len(bbox_list_prev_frame)
+                ##############
 
-            # 获取到三个指标的信息
-            confidence_scores = np.array(confidence_scores)
-            confidence_scores = confidence_scores[:, np.newaxis]
-            pose_matching_scores = np.zeros([num_dets, num_bbox_prev_frame], dtype=float)
-            iou_scores = np.ones([num_dets, num_bbox_prev_frame], dtype=float)
-            prev_track_ids = []
-            for bbox_prev_index in range(num_bbox_prev_frame):
-                # 上一帧中包含的trackIds
-                track_id = keypoints_list_prev_frame[bbox_prev_index]["track_id"]
-                prev_track_ids.append(track_id)
-            for det_id in range(num_dets):
+                num_bbox_prev_frame = len(bbox_list_prev_frame)
+
+                # 获取到三个指标的信息
+                confidence_scores = np.array(confidence_scores)
+                confidence_scores = confidence_scores[:, np.newaxis]
+                pose_matching_scores = np.zeros([num_dets, num_bbox_prev_frame], dtype=float)
+                iou_scores = np.ones([num_dets, num_bbox_prev_frame], dtype=float)
+                prev_track_ids = []
                 for bbox_prev_index in range(num_bbox_prev_frame):
-                    keypoints_cur_frame = keypoints_list[det_id]["keypoints"]
-                    bbox_cur_frame = bbox_dets_list[det_id]["bbox"]
+                    # 上一帧中包含的trackIds
+                    track_id = keypoints_list_prev_frame[bbox_prev_index]["track_id"]
+                    prev_track_ids.append(track_id)
+                for det_id in range(num_dets):
+                    for bbox_prev_index in range(num_bbox_prev_frame):
+                        keypoints_cur_frame = keypoints_list[det_id]["keypoints"]
+                        bbox_cur_frame = bbox_dets_list[det_id]["bbox"]
 
-                    keypoints_prev_frame = keypoints_list_prev_frame[bbox_prev_index]["keypoints"]
-                    bbox_prev_frame = bbox_list_prev_frame[bbox_prev_index]["bbox"]
-                    # get pose match score
-                    pose_matching_scores[det_id, bbox_prev_index] = get_pose_matching_score(keypoints_cur_frame,
-                                                                                            keypoints_prev_frame,
-                                                                                            bbox_cur_frame,
-                                                                                            bbox_prev_frame)
+                        keypoints_prev_frame = keypoints_list_prev_frame[bbox_prev_index]["keypoints"]
+                        bbox_prev_frame = bbox_list_prev_frame[bbox_prev_index]["bbox"]
+                        # get pose match score
+                        pose_matching_scores[det_id, bbox_prev_index] = get_pose_matching_score(
+                            keypoints_cur_frame,
+                            keypoints_prev_frame,
+                            bbox_cur_frame,
+                            bbox_prev_frame)
 
-                    # get bbox distance score
-                    iou_scores[det_id, bbox_prev_index] = iou(bbox_cur_frame, bbox_prev_frame, xyxy=False)
+                        # get bbox distance score
+                        iou_scores[det_id, bbox_prev_index] = iou(bbox_cur_frame, bbox_prev_frame, xyxy=False)
 
-            ###########################
-            ## 根据指标来选择当前帧的框 ##
-            ###########################
-            bbox_dets_list, keypoints_list = select_bbox_by_criterion(bbox_dets_list, keypoints_list, confidence_scores,
-                                                                      pose_matching_scores, iou_scores, prev_track_ids)
-            print("Final save bbox number: {} ".format(len(bbox_dets_list)))
-            print("image path:{}".format(img_path))
-            bbox_dets_list_list.append(bbox_dets_list)
-            keypoints_list_list.append(keypoints_list)
+                ###########################
+                ## 根据指标来选择当前帧的框 ##
+                ###########################
+                bbox_dets_list, keypoints_list = select_bbox_by_criterion(bbox_dets_list, keypoints_list,
+                                                                          confidence_scores,
+                                                                          pose_matching_scores, iou_scores,
+                                                                          prev_track_ids)
+                num_save_bbox = len(bbox_dets_list)
 
-            # ##############################
-            # ## update bbox information ##
-            # ##############################
-            # temp_bbox_dets_list = []  ## temp 临时存储
-            # temp_keypoints_list = []  ## temp 临时存储
-            # for index, bbox_save_index in enumerate(bbox_save_index_list):
-            #     if bbox_save_index == None:
-            #         continue
-            #     bbox_det_dict['track_id'] = index
-            #     bbox_det_dict = bbox_dets_list[bbox_save_index]
-            #     keypoints_dict = keypoints_list[bbox_save_index]
-            #     bbox_det_dict['det_id'] = index
-            #     keypoints_dict['track_id'] = index
-            #     keypoints_dict['det_id'] = index
-            #
-            #     temp_bbox_dets_list.append(bbox_det_dict)
-            #     temp_keypoints_list.append(keypoints_dict)
+                # 如果人数发生变化,该帧使用seed 模式
+                if num_save_bbox < num_bbox_prev_frame:
+                    seed_mode = True
+                    img_id -= 1
+                    continue
+                print("Final save bbox number: {} ".format(len(bbox_dets_list)))
+                print("image path:{}".format(img_path))
+                bbox_dets_list_list.append(bbox_dets_list)
+                keypoints_list_list.append(keypoints_list)
 
     ''' 1. statistics: get total time for lighttrack processing'''
     end_time_total = time.time()
@@ -329,7 +420,8 @@ def light_track(pose_estimator,
     if flag_visualize is True:
         print("Visualizing Pose Tracking Results...")
         create_folder(visualize_folder)
-        visualizer.show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names, image_folder,
+        visualizer.show_all_from_standard_json(output_json_path, classes, joint_pairs, joint_names,
+                                               image_folder,
                                                visualize_folder,
                                                flag_track=True)
         print("Visualization Finished!")
@@ -795,11 +887,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_path', '-v', type=str, dest='video_path',
                         # default="data/demo/video.mp4")
-                        default="data/demo/0002.mp")
+                        default="data/demo/0003.m4")
     parser.add_argument('--images_path', '-i', type=str, dest='images_path',
-                        # default="data/demo/video.mp4")
-                        # default="data/demo/000001_bonn")
-                        default="data/demo/06818_mpii")
+                        default="data/demo/0010")
+    # default="data/demo/0002")
     parser.add_argument('--model', '-m', type=str, dest='test_model',
                         default="weights/mobile-deconv/snapshot_296.ckpt")
 
@@ -818,6 +909,28 @@ if __name__ == '__main__':
     visualize_folder = "data/demo/visualize/my"
     output_video_folder = "data/demo/videos/my"
     output_json_folder = "data/demo/jsons/my"
+
+    # ##
+    # list_video = ['0004.mp4', '0005.mp4', '0006.mp4', '0007.mp4', '0008.mp4', '0009.mp4', '0010.mp4', '0011.mp4', '0012.mp4']
+    # list_video_path = [os.path.join('data/demo', video) for video in list_video]
+    #
+    # for video_path_i in list_video_path:
+    #     video_path = video_path_i
+    #     video_to_images(video_path)
+    #     video_name = os.path.basename(video_path)
+    #     video_name = os.path.splitext(video_name)[0]
+    #     image_folder = os.path.join("data/demo", video_name)
+    #     visualize_folder = os.path.join(visualize_folder, video_name)
+    #     output_json_path = os.path.join(output_json_folder, video_name + ".json")
+    #     output_video_path = os.path.join(output_video_folder, video_name + "_out.mp4")
+    #     create_folder(visualize_folder)
+    #     create_folder(output_video_folder)
+    #     create_folder(output_json_folder)
+    #
+    #     light_track(pose_estimator,
+    #                 image_folder, output_json_path,
+    #                 visualize_folder, output_video_path)
+    # sys.exit()
 
     if is_video(video_path):
         video_to_images(video_path)
