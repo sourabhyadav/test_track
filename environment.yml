@@ -1,4 +1,4 @@
-name: py36
+name: py-lighttrack
 channels:
   - conda-forge
   - anaconda
@@ -127,4 +127,4 @@ dependencies:
     - torchvision==0.2.2.post3
     - tqdm==4.23.4
     - zope.interface==4.5.0
-prefix: /root/anaconda2/envs/py36
+

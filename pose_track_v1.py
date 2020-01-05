@@ -1,15 +1,10 @@
 #!/usr/bin/python
 # -*- coding:utf8 -*-
-'''
-    Author: Guanghan Ning
-    E-mail: guanghan.ning@jd.com
-    April 23rd, 2019
-    LightTrack: A Generic Framework for Online Top-Down Human Pose Tracking
-    Demo on videos using YOLOv3 detector and Mobilenetv1-Deconv.
-
-
-'''
-
+"""
+    Author: Haoming Chen
+    E-mail: chenhaomingbob@163.com
+    Time: 2019/12/18
+"""
 import time
 import argparse
 
@@ -67,31 +62,16 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 ################
 ##单纯为了Debug
-
 image_crop_output_path = '/media/D/light-track/data/demo/crop'
 image_seed_crop_output_path = '/media/D/light-track/data/demo/seed_crop'
+tracking_gt_info = []
 
 import logging
 from sheen import Str, ColoredHandler
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 logger.addHandler(ColoredHandler())
-
-
-# # 1.显示创建
-# logging.basicConfig(filename='logger.log', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-#
-# # 2.定义logger,设定setLevel，FileHandler，setFormatter
-# logger = logging.getLogger(__name__)  # 定义一次就可以，其他地方需要调用logger,只需要直接使用logger就行了
-# logger.setLevel(level=logging.INFO)  # 定义过滤级别
-# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-#
-# console = logging.StreamHandler()  # 日志信息显示在终端terminal
-# console.setLevel(logging.INFO)
-# console.setFormatter(formatter)
-#
-# logger.addHandler(console)
 
 
 ################

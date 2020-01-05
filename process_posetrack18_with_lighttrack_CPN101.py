@@ -20,7 +20,7 @@ from HPE.config import cfg
 from tfflat.base import Tester
 from tfflat.utils import mem_info
 from tfflat.logger import colorlogger
-from nms.gpu_nms import gpu_nms
+# from nms.gpu_nms import gpu_nms
 from nms.cpu_nms import cpu_nms
 
 # import GCN utils
@@ -42,7 +42,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', '-m', type=str, dest='test_model', default="weights/CPN101/CPN_snapshot_293.ckpt")
     parser.add_argument('--dataset_split', '-s', type=str, dest='dataset_split', default="posetrack18_val")
-    parser.add_argument('--det_or_gt', '-e', type=str, dest='det_or_gt', default="det")
+    # parser.add_argument('--det_or_gt', '-e', type=str, dest='det_or_gt', default="det")
+    parser.add_argument('--det_or_gt', '-e', type=str, dest='det_or_gt', default="gt")
     args = parser.parse_args()
 
     args.bbox_thresh = 0.4
