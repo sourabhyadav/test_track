@@ -34,6 +34,14 @@ def find_first_labeled_opensvai_json(video_json_data):
     return 0
 
 
+def find_last_labeled_opensvai_json(video_json_data):
+    labeled_index = 0
+    for index in range(len(video_json_data)):
+        if video_json_data[index]['labeled'] == True:
+            labeled_index = index
+    return labeled_index
+
+
 def read_image_data_opensvai_json(image_json_data):
     image_name = image_json_data['image']['name']
     labeled = image_json_data['labeled']

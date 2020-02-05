@@ -4,7 +4,7 @@
     Author: Haoming Chen
     E-mail: chenhaomingbob@163.com
     Time: 2019/12/23
-    Description: 使用gt信息 ，按时间的顺序依次逐帧进行检测的追踪
+    Description: 使用gt信息
 """
 import time
 import argparse
@@ -100,8 +100,8 @@ def initialize_parameters():
     """test"""
     global filter_bbox_number, iou_alpha1, pose_alpha1
     filter_bbox_number = 0
-    iou_alpha1 = 1.5
-    pose_alpha1 = -0.95  # 求的是pose差异值，差异值越小表示越越相似。
+    iou_alpha1 = 0.9
+    pose_alpha1 = -1.1  # 求的是pose差异值，差异值越小表示越越相似。
 
     return
 

@@ -4,7 +4,7 @@
     Author: Haoming Chen
     E-mail: chenhaomingbob@163.com
     Time: 2019/12/23
-    Description: 使用gt信息 ，按时间的顺序依次逐帧进行检测的追踪
+    Description: 使用gt信息
 """
 import time
 import argparse
@@ -15,7 +15,8 @@ import numpy as np
 import tensorflow as tf
 import logging
 # import Network
-from network_MSRA152 import Network
+from network_mobile_deconv import Network
+
 # detector utils
 from detector.detector_yolov3 import *  ##
 
@@ -46,7 +47,7 @@ from utils_choose import *
 import logging
 from sheen import Str, ColoredHandler
 from my_toolbox.json_utils import *
-from my_toolbox.bipartite_graph import *
+from bipartite_graph import *
 
 from tqdm import tqdm
 
@@ -79,60 +80,55 @@ def initialize_parameters():
 
     global keyframe_interval, enlarge_scale, pose_matching_threshold
     keyframe_interval = 40  # choice examples: [2, 3, 5, 8, 10, 20, 40, 100, ....]
-
     enlarge_scale = 0.2  # how much to enlarge the bbox before pose estimation
     pose_matching_threshold = 0.5
 
     global flag_flip
     flag_flip = True
 
-    global total_time_POSE_ESTIMATOR, total_time_POSE_SIMILARITY, total_time_DET, total_time_ALL, total_time_ASSOCIATE
-    global total_num_FRAMES, total_num_PERSONS, total_num_VIDEOS
-    total_time_POSE_ESTIMATOR = 0
-    total_time_POSE_SIMILARITY = 0
+    global total_time_POSE, total_time_DET, total_time_ALL, total_num_FRAMES, total_num_PERSONS
+    total_time_POSE = 0
     total_time_DET = 0
     total_time_ALL = 0
-    total_time_ASSOCIATE = 0
-    total_num_VIDEOS = 0
     total_num_FRAMES = 0
     total_num_PERSONS = 0
-
-    """test"""
-    global filter_bbox_number, iou_alpha1, pose_alpha1
-    filter_bbox_number = 0
-    iou_alpha1 = 1.5
-    pose_alpha1 = -0.95  # 求的是pose差异值，差异值越小表示越越相似。
-
     return
 
 
 def light_track(pose_estimator,
                 image_folder, output_json_path,
                 visualize_folder, output_video_path, gt_info):
-    global total_time_POSE_ESTIMATOR, total_time_POSE_SIMILARITY, total_time_DET, total_time_ALL, total_time_ASSOCIATE
-    global video_name, iou_alpha1, pose_alpha1
-    global filter_bbox_number, total_num_FRAMES, total_num_PERSONS, total_num_VIDEOS
+    global total_time_POSE, total_time_DET, total_time_ALL, total_num_FRAMES, total_num_PERSONS
+    global video_name
+
     ''' 1. statistics: get total time for lighttrack processing'''
     st_time_total = time.time()
 
+    next_id = 1
     bbox_dets_list_list = []
     keypoints_list_list = []
 
     num_imgs = len(gt_info)
-
+    total_num_FRAMES = num_imgs
     first_img_id = 0
 
     start_from_labeled = False
     if start_from_labeled:
         first_img_id = find_first_labeled_opensvai_json(gt_info)
 
-    # last_gt_img_id = find_last_labeled_opensvai_json(gt_info)
-    # num_imgs = last_gt_img_id + 1
-    next_id = 0  # track_id 从0开始算
     img_id = first_img_id
-    keypoints_number = 15
-    total_num_FRAMES = num_imgs
+    """  之后的数据关联如何做？
 
+    TODO  
+    相邻两帧之间的检测框匹配，权值使用 total score = IOU score + Pose similarity, 之后再使用匈牙利算法进行二分图的匹配。
+
+    大致思路：
+        1.先算出距离相似度和pose相似度，将两者相加作为 框之间的联系。
+        2.过滤低置信度的框。
+        3.二分图匹配。
+    """
+    iou_alpha1 = 1
+    pose_alpha1 = -1.3  # 求的是pose差异值，差异值越小表示越越相似。
     while img_id < num_imgs:
 
         img_gt_info = gt_info[img_id]
@@ -169,7 +165,7 @@ def light_track(pose_estimator,
             else:  # Not First Frame
                 bbox_list_prev_frame = bbox_dets_list_list[prev_frame_img_id].copy()
                 keypoints_list_prev_frame = keypoints_list_list[prev_frame_img_id].copy()
-                scores = np.zeros((num_dets, len(keypoints_list_prev_frame)))
+                scores = np.empty((num_dets, len(keypoints_list_prev_frame)))
                 for det_id in range(num_dets):
                     track_id, bbox_det, keypoints = get_candidate_info_opensvai_json(candidates_info, det_id)
                     bbox_det_dict = {"img_id": img_id,
@@ -188,30 +184,18 @@ def light_track(pose_estimator,
                         prev_keypoints_dict = keypoints_list_prev_frame[prev_det_id]
                         iou_score = iou(bbox_det, prev_bbox_det_dict['bbox'], xyxy=False)
                         if iou_score > 0.5:
-                            st_time_pose = time.time()
-                            # gt的点标的并不全,没有标注的数据c为0
-                            prev_keypoints = prev_keypoints_dict["keypoints"].copy()
-                            for index, value in enumerate(keypoints[2::3]):
-                                if value == 0:
-                                    prev_keypoints[index * 3:(index + 1) * 3] = 0, 0, 0
-
-                            pose_match_score = get_pose_matching_score(keypoints, prev_keypoints,
+                            pose_match_score = get_pose_matching_score(keypoints, prev_keypoints_dict["keypoints"],
                                                                        bbox_det_dict['bbox'],
                                                                        prev_bbox_det_dict['bbox'])
-                            end_time_pose = time.time()
-                            total_time_POSE_SIMILARITY += (end_time_pose - st_time_pose)
                             scores[det_id, prev_det_id] = iou_alpha1 * iou_score + pose_alpha1 * pose_match_score
 
                     bbox_dets_list.append(bbox_det_dict)
                     keypoints_list.append(keypoints_dict)
-                st_time_ass = time.time()
+
                 bbox_dets_list, keypoints_list, now_next_id = bipartite_graph_matching(bbox_dets_list,
                                                                                        keypoints_list_prev_frame,
                                                                                        scores, keypoints_list, next_id)
-                end_time_ass = time.time()
-                total_time_ASSOCIATE += (end_time_ass - st_time_ass)
-
-                next_id = now_next_id
+                next_id = now_next_id + 1
 
             # 这一帧没有一个保留下来的bbox
             if len(bbox_dets_list) == 0:
@@ -236,10 +220,7 @@ def light_track(pose_estimator,
             logger.info("type:{},img_id:{}".format('normal', img_id))
             ''' NOT GT Frame '''
             candidates_total = []
-            st_time_DET = time.time()
             candidates_from_detector = inference_yolov3(img_path)
-            end_time_DET = time.time()
-            total_time_DET += (end_time_DET - st_time_DET)
 
             candidates_from_prev = []
 
@@ -270,15 +251,11 @@ def light_track(pose_estimator,
                                  "imgpath": img_path,
                                  "track_id": None,
                                  "bbox": bbox_det}
-                st_time_pose = time.time()
                 keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]['keypoints']
-                end_time_pose = time.time()
-                total_time_POSE_ESTIMATOR += (end_time_pose - st_time_pose)
+
                 bbox_det_next = xywh_to_x1y1x2y2(bbox_det)
-                score = sum(keypoints[2::3]) / keypoints_number
-                # 不知道为什么他这个pose的置信度会高于1
-                if bbox_invalid(bbox_det_next) or score < 0.7:
-                    filter_bbox_number += 1
+                score = sum(keypoints[2::3]) / 25
+                if bbox_invalid(bbox_det_next) or score < 0.33:
                     continue
                 candidate_det = bbox_det_next + [score]
                 candidates_dets.append(candidate_det)
@@ -326,24 +303,18 @@ def light_track(pose_estimator,
                         prev_keypoints_dict = keypoints_list_prev_frame[prev_det_id]
                         iou_score = iou(bbox_det, prev_bbox_det_dict['bbox'], xyxy=False)
                         if iou_score > 0.5:
-                            st_time_pose = time.time()
                             pose_match_score = get_pose_matching_score(keypoints, prev_keypoints_dict["keypoints"],
                                                                        bbox_det_dict["bbox"],
                                                                        prev_bbox_det_dict["bbox"])
-                            end_time_pose = time.time()
-                            total_time_POSE_SIMILARITY += (end_time_pose - st_time_pose)
                             scores[det_id, prev_det_id] = iou_alpha1 * iou_score + pose_alpha1 * pose_match_score
 
-                st_time_ass = time.time()
                 bbox_dets_list, keypoints_list, now_next_id = bipartite_graph_matching(bbox_dets_list,
                                                                                        bbox_list_prev_frame, scores,
                                                                                        keypoints_list, next_id)
-                end_time_ass = time.time()
-                total_time_ASSOCIATE += (end_time_ass - st_time_ass)
-
-                next_id = now_next_id
+                next_id = now_next_id + 1
 
             if len(bbox_dets_list) == 0:
+                img_id += 1
                 bbox_det_dict = {"img_id": img_id,
                                  "det_id": 0,
                                  "track_id": None,
@@ -357,6 +328,9 @@ def light_track(pose_estimator,
                                   "imgpath": img_path,
                                   "keypoints": []}
                 keypoints_list.append(keypoints_dict)
+
+                bbox_dets_list_list.append(bbox_dets_list)
+                keypoints_list_list.append(keypoints_list)
 
             bbox_dets_list_list.append(bbox_dets_list)
             keypoints_list_list.append(keypoints_list)
@@ -529,6 +503,15 @@ def get_pose_matching_score(keypoints_A, keypoints_B, bbox_A, bbox_B):
     flag_match, dist = pose_matching(data_A, data_B)
     end = time.time()
     return dist
+
+
+# def get_iou_score(bbox_gt, bbox_det):
+#     boxA = xywh_to_x1y1x2y2(bbox_gt)
+#     boxB = xywh_to_x1y1x2y2(bbox_det)
+#
+#     iou_score = iou(boxA, boxB)
+#     # print("iou_score: ", iou_score)
+#     return iou_score
 
 
 def is_target_lost(keypoints, method="max_average"):
@@ -830,6 +813,13 @@ def prepare_results(test_data, cls_skeleton, cls_dets):
     return dump_results
 
 
+def is_keyframe(img_id, interval=10):
+    if img_id % interval == 0:
+        return True
+    else:
+        return False
+
+
 def pose_to_standard_mot(keypoints_list_list, dets_list_list):
     openSVAI_python_data_list = []
 
@@ -953,19 +943,16 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 if __name__ == '__main__':
 
     global args
+    ## from detector.detector_yolov3 import *
     parser = argparse.ArgumentParser()
     # parser.add_argument('--video_path', '-v', type=str, dest='video_path',
     #                     # default="data/demo/video.mp4")
     #                     default="data/demo/0003.m4")
     # parser.add_argument('--images_path', '-i', type=str, dest='images_path',
     #                     default="data/demo/mpii-video-pose/0001")
-    # parser.add_argument('--model', '-m', type=str, dest='test_model',
-    #                     default="weights/mobile-deconv/snapshot_296.ckpt")
-    # parser.add_argument('--model', '-m', type=str, dest='test_model',
-    #                     default="weights/CPN101/CPN_snapshot_293.ckpt")
+    # default="data/demo/0002")
     parser.add_argument('--model', '-m', type=str, dest='test_model',
-                        default="weights/MSRA152/MSRA_snapshot_285.ckpt")
-    # default="weights/mobile-deconv/snapshot_296.ckpt")
+                        default="weights/mobile-deconv/snapshot_296.ckpt")
     parser.add_argument('--train', type=bool, dest='train',
                         default=True)
     # parser.add_argument('--exp_number', type=str, dest='exp_number', default='2017-val',
@@ -984,27 +971,20 @@ if __name__ == '__main__':
     exp_number = args.exp_number
 
     ##################################
-    test_one_video = False
-    # exp_number = "test_one_video_MSRA152"
-    val = True
-    exp_number = "2017-val-iou-{}-pose{}-together-MSRA152".format(iou_alpha1, pose_alpha1)
+    test_one_video = True
+    val = False
     test = False
-    # exp_number = "2017-test-iou-pose-together"
+    exp_number = "2017-val-iou-pose-together"
+
     experiment_output_root = '/media/F'
     visualize_root_folder = "{}/exp_{}/visualize".format(experiment_output_root, exp_number)
     output_video_folder = "{}/exp_{}/videos".format(experiment_output_root, exp_number)
     output_json_folder = "{}/exp_{}/jsons".format(experiment_output_root, exp_number)
-    evaluation_folder = "{}/exp_{}/evaluation".format(experiment_output_root, exp_number)
     logger_file_foler = "{}/exp_{}/log".format(experiment_output_root, exp_number)
 
     create_folder(output_video_folder)
     create_folder(output_json_folder)
     create_folder(logger_file_foler)
-
-    create_folder(evaluation_folder)
-    create_folder(os.path.join(evaluation_folder, "annotations", "val"))
-    create_folder(os.path.join(evaluation_folder, "out"))
-    create_folder(os.path.join(evaluation_folder, "posetrack_results"))
     ## save log file
     logging.basicConfig(format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s',
                         level=logging.DEBUG,
@@ -1012,7 +992,7 @@ if __name__ == '__main__':
                         filemode='a')
     ####################################
 
-    logger.info(" test_one_video:{}  val:{}  test:{} ".format(test_one_video, val, test))
+    logging.info(" test_one_video:{} /n val:{} /n test:{} ".format(test_one_video, val, test))
 
     """ 每个JSON文件为一个视频，读取一个个的JSON文件，产生结果 """
     if test_one_video:
@@ -1087,13 +1067,3 @@ if __name__ == '__main__':
 
         logger.info("videos_number:{}".format(videos_number))
         logger.info("frames_number:{}".format(frame_number))
-
-    ''' Display statistics '''
-    logger.info("total_time_ALL: {:.2f}s".format(total_time_ALL))
-    logger.info("total_time_DET: {:.2f}s".format(total_time_DET))
-    logger.info("total_time_POSE_ESTIMATOR: {:.2f}s".format(total_time_POSE_ESTIMATOR))
-    logger.info("total_time_POSE_SIMILARITY: {:.2f}s".format(total_time_POSE_SIMILARITY))
-    logger.info("total_time_ASSOCIATE: {:.2f}s".format(total_time_ASSOCIATE))
-    logger.info("total_time_LIGHTTRACK: {:.2f}s".format(
-        total_time_ALL - total_time_DET - total_time_POSE_ESTIMATOR - total_time_POSE_SIMILARITY - total_time_ASSOCIATE))
-    logger.info("filter_bbox_number:{}".format(filter_bbox_number))

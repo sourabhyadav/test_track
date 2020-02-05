@@ -35,7 +35,6 @@ if keypoints_mode == "COCO":
                    ['right knee', 'right ankle', 'skyblue'],
                    ['left pelvis', 'left knee', 'red'],
                    ['left knee', 'left ankle', 'skyblue'],
-
                    ['left eye', 'left ear', 'skyblue'],
                    ['left eye', 'nose', 'skyblue'],
                    ['right eye', 'right ear', 'skyblue'],

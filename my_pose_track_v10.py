@@ -4,7 +4,7 @@
     Author: Haoming Chen
     E-mail: chenhaomingbob@163.com
     Time: 2019/12/23
-    Description: 使用gt信息 ，按时间的顺序依次逐帧进行检测的追踪
+    Description: 使用gt信息
 """
 import time
 import argparse
@@ -15,7 +15,8 @@ import numpy as np
 import tensorflow as tf
 import logging
 # import Network
-from network_MSRA152 import Network
+from network_mobile_deconv import Network
+
 # detector utils
 from detector.detector_yolov3 import *  ##
 
@@ -46,7 +47,7 @@ from utils_choose import *
 import logging
 from sheen import Str, ColoredHandler
 from my_toolbox.json_utils import *
-from my_toolbox.bipartite_graph import *
+from bipartite_graph import *
 
 from tqdm import tqdm
 
@@ -79,60 +80,55 @@ def initialize_parameters():
 
     global keyframe_interval, enlarge_scale, pose_matching_threshold
     keyframe_interval = 40  # choice examples: [2, 3, 5, 8, 10, 20, 40, 100, ....]
-
     enlarge_scale = 0.2  # how much to enlarge the bbox before pose estimation
     pose_matching_threshold = 0.5
 
     global flag_flip
     flag_flip = True
 
-    global total_time_POSE_ESTIMATOR, total_time_POSE_SIMILARITY, total_time_DET, total_time_ALL, total_time_ASSOCIATE
-    global total_num_FRAMES, total_num_PERSONS, total_num_VIDEOS
-    total_time_POSE_ESTIMATOR = 0
-    total_time_POSE_SIMILARITY = 0
+    global total_time_POSE, total_time_DET, total_time_ALL, total_num_FRAMES, total_num_PERSONS
+    total_time_POSE = 0
     total_time_DET = 0
     total_time_ALL = 0
-    total_time_ASSOCIATE = 0
-    total_num_VIDEOS = 0
     total_num_FRAMES = 0
     total_num_PERSONS = 0
-
-    """test"""
-    global filter_bbox_number, iou_alpha1, pose_alpha1
-    filter_bbox_number = 0
-    iou_alpha1 = 1.5
-    pose_alpha1 = -0.95  # 求的是pose差异值，差异值越小表示越越相似。
-
     return
 
 
 def light_track(pose_estimator,
                 image_folder, output_json_path,
                 visualize_folder, output_video_path, gt_info):
-    global total_time_POSE_ESTIMATOR, total_time_POSE_SIMILARITY, total_time_DET, total_time_ALL, total_time_ASSOCIATE
-    global video_name, iou_alpha1, pose_alpha1
-    global filter_bbox_number, total_num_FRAMES, total_num_PERSONS, total_num_VIDEOS
+    global total_time_POSE, total_time_DET, total_time_ALL, total_num_FRAMES, total_num_PERSONS
+    global video_name
+
     ''' 1. statistics: get total time for lighttrack processing'''
     st_time_total = time.time()
 
+    next_id = 1
     bbox_dets_list_list = []
     keypoints_list_list = []
 
     num_imgs = len(gt_info)
-
+    total_num_FRAMES = num_imgs
     first_img_id = 0
 
     start_from_labeled = False
     if start_from_labeled:
         first_img_id = find_first_labeled_opensvai_json(gt_info)
 
-    # last_gt_img_id = find_last_labeled_opensvai_json(gt_info)
-    # num_imgs = last_gt_img_id + 1
-    next_id = 0  # track_id 从0开始算
     img_id = first_img_id
-    keypoints_number = 15
-    total_num_FRAMES = num_imgs
+    """  之后的数据关联如何做？
 
+    TODO  
+    相邻两帧之间的检测框匹配，权值使用 total score = IOU score + Pose similarity, 之后再使用匈牙利算法进行二分图的匹配。
+
+    大致思路：
+        1.先算出距离相似度和pose相似度，将两者相加作为 框之间的联系。
+        2.过滤低置信度的框。
+        3.二分图匹配。
+    """
+    iou_alpha1 = 1
+    pose_alpha1 = 1
     while img_id < num_imgs:
 
         img_gt_info = gt_info[img_id]
@@ -141,11 +137,10 @@ def light_track(pose_estimator,
 
         bbox_dets_list = []  # keyframe: start from empty
         keypoints_list = []  # keyframe: start from empty
-        prev_frame_img_id = max(0, img_id - first_img_id - 1)
-        if labeled and (img_id - first_img_id) % 5 == 0:
-            logger.info("type:{},img_id:{}".format('gt', img_id))
-            # gt frame
 
+        if labeled and (img_id - first_img_id) % 5 == 0:
+            logger.info("{},{}".format('gt', img_id))
+            # gt frame
             num_dets = len(candidates_info)
 
             if img_id == first_img_id:
@@ -165,11 +160,10 @@ def light_track(pose_estimator,
                     bbox_dets_list.append(bbox_det_dict)
                     keypoints_list.append(keypoints_dict)
                     next_id = max(next_id, track_id)
-                    next_id += 1
             else:  # Not First Frame
-                bbox_list_prev_frame = bbox_dets_list_list[prev_frame_img_id].copy()
-                keypoints_list_prev_frame = keypoints_list_list[prev_frame_img_id].copy()
-                scores = np.zeros((num_dets, len(keypoints_list_prev_frame)))
+                bbox_list_prev_frame = bbox_dets_list_list[img_id - first_img_id - 1].copy()
+                keypoints_list_prev_frame = keypoints_list_list[img_id - first_img_id - 1].copy()
+                scores = np.empty((num_dets, len(keypoints_list_prev_frame)))
                 for det_id in range(num_dets):
                     track_id, bbox_det, keypoints = get_candidate_info_opensvai_json(candidates_info, det_id)
                     bbox_det_dict = {"img_id": img_id,
@@ -184,36 +178,67 @@ def light_track(pose_estimator,
                                       "keypoints": keypoints}
                     # 计算当前帧的bbox和先前帧bboxes的分数
                     for prev_det_id in range(len(keypoints_list_prev_frame)):
-                        prev_bbox_det_dict = bbox_list_prev_frame[prev_det_id]
-                        prev_keypoints_dict = keypoints_list_prev_frame[prev_det_id]
+                        prev_bbox_det_dict = bbox_dets_list_list[prev_det_id]
+                        prev_keypoints_dict = keypoints_list_list[prev_det_id]
                         iou_score = iou(bbox_det, prev_bbox_det_dict['bbox'], xyxy=False)
                         if iou_score > 0.5:
-                            st_time_pose = time.time()
-                            # gt的点标的并不全,没有标注的数据c为0
-                            prev_keypoints = prev_keypoints_dict["keypoints"].copy()
-                            for index, value in enumerate(keypoints[2::3]):
-                                if value == 0:
-                                    prev_keypoints[index * 3:(index + 1) * 3] = 0, 0, 0
-
-                            pose_match_score = get_pose_matching_score(keypoints, prev_keypoints,
-                                                                       bbox_det_dict['bbox'],
-                                                                       prev_bbox_det_dict['bbox'])
-                            end_time_pose = time.time()
-                            total_time_POSE_SIMILARITY += (end_time_pose - st_time_pose)
+                            pose_match_score = get_pose_matching_score(keypoints, prev_keypoints_dict["keypoints"],
+                                                                       bbox_det_dict,
+                                                                       prev_bbox_det_dict)
                             scores[det_id, prev_det_id] = iou_alpha1 * iou_score + pose_alpha1 * pose_match_score
 
                     bbox_dets_list.append(bbox_det_dict)
                     keypoints_list.append(keypoints_dict)
-                st_time_ass = time.time()
-                bbox_dets_list, keypoints_list, now_next_id = bipartite_graph_matching(bbox_dets_list,
-                                                                                       keypoints_list_prev_frame,
-                                                                                       scores, keypoints_list, next_id)
-                end_time_ass = time.time()
-                total_time_ASSOCIATE += (end_time_ass - st_time_ass)
 
-                next_id = now_next_id
-
-            # 这一帧没有一个保留下来的bbox
+                bbox_dets_list = bipartite_graph_matching(bbox_dets_list, keypoints_list_prev_frame, scores)
+                # # 先用距离相似度来判断
+                # track_id, match_index = get_track_id_SpatialConsistency(bbox_det, bbox_list_prev_frame)
+                #
+                # bbox_det_dict = {"img_id": img_id,
+                #                  "det_id": det_id,
+                #                  "imgpath": img_path,
+                #                  "track_id": None,
+                #                  "bbox": bbox_det}
+                # keypoints_dict = {"img_id": img_id,
+                #                   "det_id": det_id,
+                #                   "imgpath": img_path,
+                #                   "track_id": None,
+                #                   "keypoints": keypoints}
+                #
+                # if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
+                #     del bbox_list_prev_frame[match_index]
+                #     del keypoints_list_prev_frame[match_index]
+                #     bbox_det_dict["track_id"] = track_id
+                #     keypoints_dict["track_id"] = track_id
+                #     bbox_dets_list.append(bbox_det_dict)
+                #     keypoints_list.append(keypoints_dict)
+                #     # 找到匹配的了，找下一个
+                #     continue
+                #
+                # # 再使用pose 相似度
+                # track_id, match_index = get_track_id_SGCN(bbox_det, bbox_list_prev_frame, keypoints,
+                #                                           keypoints_list_prev_frame)
+                #
+                # if track_id != -1:
+                #     del bbox_list_prev_frame[match_index]
+                #     del keypoints_list_prev_frame[match_index]
+                #     bbox_det_dict["track_id"] = track_id
+                #     keypoints_dict["track_id"] = track_id
+                #     bbox_dets_list.append(bbox_det_dict)
+                #     keypoints_list.append(keypoints_dict)
+                #     # 找到匹配的了，找下一个
+                #     continue
+                #
+                # # not find a match from  previous frame, then assign a new id
+                # track_id = next_id
+                # next_id += 1
+                #
+                # bbox_det_dict["track_id"] = track_id
+                # keypoints_dict["track_id"] = track_id
+                #
+                # bbox_dets_list.append(bbox_det_dict)
+                # keypoints_list.append(keypoints_dict)
+            # 当前帧的最后的关联结果为空.
             if len(bbox_dets_list) == 0:
                 bbox_det_dict = {"img_id": img_id,
                                  "det_id": 0,
@@ -233,21 +258,17 @@ def light_track(pose_estimator,
             keypoints_list_list.append(keypoints_list)
 
         else:
-            logger.info("type:{},img_id:{}".format('normal', img_id))
+            logger.info("{},{}".format('normal', img_id))
             ''' NOT GT Frame '''
             candidates_total = []
-            st_time_DET = time.time()
             candidates_from_detector = inference_yolov3(img_path)
-            end_time_DET = time.time()
-            total_time_DET += (end_time_DET - st_time_DET)
 
             candidates_from_prev = []
 
-            bbox_list_prev_frame = []
             ''' 根据先前帧的信息补充框 '''
             if img_id > first_img_id:
-                bbox_list_prev_frame = bbox_dets_list_list[prev_frame_img_id].copy()
-                keypoints_list_prev_frame = keypoints_list_list[prev_frame_img_id].copy()
+                bbox_list_prev_frame = bbox_dets_list_list[img_id - first_img_id - 1].copy()
+                keypoints_list_prev_frame = keypoints_list_list[img_id - first_img_id - 1].copy()
                 num_prev_bbox = len(bbox_list_prev_frame)
                 for prev_det_id in range(num_prev_bbox):
                     # obtain bbox position and track id
@@ -257,6 +278,34 @@ def light_track(pose_estimator,
                         continue
                     # xywh
                     candidates_from_prev.append(bbox_det_next)
+                # my_enlarge_scale = 0.2
+                # cur_image = cv2.imread(img_path)
+                # cur_image_name = os.path.basename(img_path).split('.')[0]
+                # for prev_det_id in range(num_prev_bbox):
+                #     prev_bbox_det = bbox_list_prev_frame[prev_det_id]["bbox"]  # xywh
+                #     prev_enlarge_bbox_det = x1y1x2y2_to_xywh(
+                #         enlarge_bbox(xywh_to_x1y1x2y2(prev_bbox_det), my_enlarge_scale))
+                #     x1, x2, y1, y2 = max(0, int(prev_enlarge_bbox_det[0])), int(
+                #         prev_enlarge_bbox_det[0] + prev_enlarge_bbox_det[2]), \
+                #                      max(0, int(prev_enlarge_bbox_det[1])), int(
+                #         prev_enlarge_bbox_det[1] + prev_enlarge_bbox_det[3])
+                #     crop_image = cur_image[y1:y2, x1:x2].copy()
+                #     crop_image_folder_path = os.path.join(image_seed_crop_output_path, video_name, cur_image_name)
+                #     create_folder(crop_image_folder_path)
+                #     crop_image_path = os.path.join(crop_image_folder_path, "{:0>3d}".format(prev_det_id)) + '.jpg'
+                #     cv2.imwrite(crop_image_path, crop_image)
+                #     # 查看裁剪后的图片
+                #     human_candidates, confidence_scores = inference_yolov3_v1(crop_image_path)
+                #     # logger.info(confidence_scores)
+                #     if len(human_candidates) > 0 and confidence_scores[0] > 0.7:
+                #         selected_bbox = human_candidates[0]
+                #         x1y1x2y2 = xywh_to_x1y1x2y2(selected_bbox)
+                #         # 左上角坐标
+                #         top_left_point_x, top_left_point_y = min(x1y1x2y2[0], x1y1x2y2[2]), min(x1y1x2y2[1],
+                #                                                                                 x1y1x2y2[3])
+                #         bbox_det_in_original_pic = [x1 + top_left_point_x, y1 + top_left_point_y, selected_bbox[2],
+                #                                     selected_bbox[3]]
+                #         candidates_from_prev.append(bbox_det_in_original_pic)  # xywh
 
             ''' 拿到本帧全部的候选框 '''
             candidates_total = candidates_from_detector + candidates_from_prev
@@ -270,15 +319,11 @@ def light_track(pose_estimator,
                                  "imgpath": img_path,
                                  "track_id": None,
                                  "bbox": bbox_det}
-                st_time_pose = time.time()
                 keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]['keypoints']
-                end_time_pose = time.time()
-                total_time_POSE_ESTIMATOR += (end_time_pose - st_time_pose)
+
                 bbox_det_next = xywh_to_x1y1x2y2(bbox_det)
-                score = sum(keypoints[2::3]) / keypoints_number
-                # 不知道为什么他这个pose的置信度会高于1
-                if bbox_invalid(bbox_det_next) or score < 0.7:
-                    filter_bbox_number += 1
+                score = sum(keypoints[2::3]) / 25
+                if bbox_invalid(bbox_det_next) or score < 0.5:
                     continue
                 candidate_det = bbox_det_next + [score]
                 candidates_dets.append(candidate_det)
@@ -290,60 +335,9 @@ def light_track(pose_estimator,
 
                 bbox_dets_list.append(bbox_det_dict)
                 keypoints_list.append(keypoints_dict)
-            # 根据bbox的置信度来使用nms
-            keep = py_cpu_nms(np.array(candidates_dets, dtype=np.float32), 0.5) if len(candidates_dets) > 0 else []
-
-            candidates_total = np.array(candidates_total)[keep]
-            t = bbox_dets_list.copy()
-            k = keypoints_list.copy()
-            # 筛选过后的
-            bbox_dets_list = [t[i] for i in keep]
-            keypoints_list = [k[i] for i in keep]
-            """ Data association """
-            cur_det_number = len(candidates_total)
-            prev_det_number = len(bbox_list_prev_frame)
-            if img_id == first_img_id or prev_det_number == 0:
-                for det_id, bbox_det_dict in enumerate(bbox_dets_list):
-                    keypoints_dict = keypoints_list[det_id]
-                    bbox_det_dict['det_id'] = det_id
-                    keypoints_dict['det_id'] = det_id
-                    track_id = next_id
-                    bbox_det_dict['track_id'] = track_id
-                    keypoints_dict['track_id'] = track_id
-                    next_id = max(next_id, track_id)
-                    next_id += 1
-            else:
-                scores = np.zeros((cur_det_number, prev_det_number))
-                for det_id in range(cur_det_number):
-                    bbox_det_dict = bbox_dets_list[det_id]
-                    keypoints_dict = keypoints_list[det_id]
-                    bbox_det = bbox_det_dict['bbox']
-                    keypoints = keypoints_dict['keypoints']
-
-                    # 计算当前帧的bbox和先前帧bboxes的分数
-                    for prev_det_id in range(prev_det_number):
-                        prev_bbox_det_dict = bbox_list_prev_frame[prev_det_id]
-                        prev_keypoints_dict = keypoints_list_prev_frame[prev_det_id]
-                        iou_score = iou(bbox_det, prev_bbox_det_dict['bbox'], xyxy=False)
-                        if iou_score > 0.5:
-                            st_time_pose = time.time()
-                            pose_match_score = get_pose_matching_score(keypoints, prev_keypoints_dict["keypoints"],
-                                                                       bbox_det_dict["bbox"],
-                                                                       prev_bbox_det_dict["bbox"])
-                            end_time_pose = time.time()
-                            total_time_POSE_SIMILARITY += (end_time_pose - st_time_pose)
-                            scores[det_id, prev_det_id] = iou_alpha1 * iou_score + pose_alpha1 * pose_match_score
-
-                st_time_ass = time.time()
-                bbox_dets_list, keypoints_list, now_next_id = bipartite_graph_matching(bbox_dets_list,
-                                                                                       bbox_list_prev_frame, scores,
-                                                                                       keypoints_list, next_id)
-                end_time_ass = time.time()
-                total_time_ASSOCIATE += (end_time_ass - st_time_ass)
-
-                next_id = now_next_id
-
-            if len(bbox_dets_list) == 0:
+            ''' 根据bbox的置信度来使用nms '''
+            if len(candidates_dets) == 0:
+                img_id += 1
                 bbox_det_dict = {"img_id": img_id,
                                  "det_id": 0,
                                  "track_id": None,
@@ -357,6 +351,69 @@ def light_track(pose_estimator,
                                   "imgpath": img_path,
                                   "keypoints": []}
                 keypoints_list.append(keypoints_dict)
+
+                bbox_dets_list_list.append(bbox_dets_list)
+                keypoints_list_list.append(keypoints_list)
+                continue
+            keep = py_cpu_nms(np.array(candidates_dets, dtype=np.float32), 0.5)
+            candidates_total = np.array(candidates_total)[keep]
+            t = bbox_dets_list.copy()
+            k = keypoints_list.copy()
+            bbox_dets_list = []
+            keypoints_list = []
+            bbox_dets_list = [t[i] for i in keep]
+            keypoints_list = [k[i] for i in keep]
+            """ Data association """
+            # 检测bbox的keypoints
+            num_candidate = len(candidates_total)
+            for candidate_id in range(num_candidate):
+                bbox_det_dict = bbox_dets_list[candidate_id]
+                keypoints_dict = keypoints_list[candidate_id]
+                bbox_det = bbox_det_dict['bbox']
+                keypoints = keypoints_dict['keypoints']
+                # Data association
+                # 先用距离相似度来判断
+                if img_id > first_img_id:
+                    track_id, match_index = get_track_id_SpatialConsistency(bbox_det, bbox_list_prev_frame)
+                    if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
+                        del bbox_list_prev_frame[match_index]
+                        del keypoints_list_prev_frame[match_index]
+                        bbox_det_dict["track_id"] = track_id
+                        bbox_det_dict["det_id"] = candidate_id
+                        keypoints_dict["track_id"] = track_id
+                        keypoints_dict["det_id"] = candidate_id
+                        keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]['keypoints']
+                        keypoints_dict['keypoints'] = keypoints
+                        # 找到匹配的了，找下一个
+                        continue
+
+                    # 再使用pose 相似度
+                    track_id, match_index = get_track_id_SGCN(bbox_det, bbox_list_prev_frame, keypoints,
+                                                              keypoints_list_prev_frame)
+
+                    if track_id != -1:
+                        del bbox_list_prev_frame[match_index]
+                        del keypoints_list_prev_frame[match_index]
+                        bbox_det_dict["track_id"] = track_id
+                        bbox_det_dict["det_id"] = candidate_id
+                        keypoints_dict["track_id"] = track_id
+                        keypoints_dict["det_id"] = candidate_id
+                        keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]['keypoints']
+                        keypoints_dict['keypoints'] = keypoints
+                        # 找到匹配的了，找下一个
+                        continue
+
+                # not find a match from  previous frame, then assign a new id
+                track_id = next_id
+                next_id += 1
+
+                bbox_det_dict["track_id"] = track_id
+                bbox_det_dict["det_id"] = candidate_id
+                keypoints_dict["track_id"] = track_id
+                keypoints_dict["det_id"] = candidate_id
+
+                keypoints = inference_keypoints(pose_estimator, bbox_det_dict)[0]['keypoints']
+                keypoints_dict['keypoints'] = keypoints
 
             bbox_dets_list_list.append(bbox_dets_list)
             keypoints_list_list.append(keypoints_list)
@@ -398,42 +455,17 @@ def light_track(pose_estimator,
                                           format="XVID")
 
 
-def bipartite_graph_matching(current_bbox_dict_list, prev_bbox_dict_list, score_between_two_frames,
-                             current_keypoints_dict_list, next_id):
+def bipartite_graph_matching(current_bbox_dict_list, prev_bbox_dict_list, score_between_two_frames):
     prev_to_cur_match = Kuhn_Munkras_match(current_bbox_dict_list, prev_bbox_dict_list, score_between_two_frames)
     result_bbox_dict_list = []
-    result_keypoints_dict_list = []
     det_number = 0
-    assigned_cur_bbox = []
     for prev_index, cur_index in enumerate(prev_to_cur_match):
-        if not np.isnan(cur_index):
-            assigned_cur_bbox.append(cur_index)
-            cur_index = int(cur_index)
+        if cur_index != np.nan:
             cur_bbox_dict = current_bbox_dict_list[cur_index]
-            cur_keypoints_dict = current_keypoints_dict_list[cur_index]
             cur_bbox_dict['det_id'] = det_number
             cur_bbox_dict['track_id'] = prev_index
-            cur_keypoints_dict['det_id'] = det_number
-            cur_keypoints_dict['track_id'] = prev_index
             result_bbox_dict_list.append(cur_bbox_dict)
-            result_keypoints_dict_list.append(cur_keypoints_dict)
-            det_number += 1
-
-    # 没有分配track_id的bbox，给其新的track_id
-    for cur_index in range(len(current_bbox_dict_list)):
-        if cur_index not in assigned_cur_bbox:
-            cur_bbox_dict = current_bbox_dict_list[cur_index]
-            cur_keypoints_dict = current_keypoints_dict_list[cur_index]
-            cur_bbox_dict['det_id'] = det_number
-            cur_bbox_dict['track_id'] = next_id
-            cur_keypoints_dict['det_id'] = det_number
-            cur_keypoints_dict['track_id'] = next_id
-            result_bbox_dict_list.append(cur_bbox_dict)
-            result_keypoints_dict_list.append(cur_keypoints_dict)
-            det_number += 1
-            next_id += 1
-
-    return result_bbox_dict_list, result_keypoints_dict_list, next_id
+    return result_bbox_dict_list
 
 
 def distance_between_two_boxs(boxA, boxB):
@@ -529,6 +561,15 @@ def get_pose_matching_score(keypoints_A, keypoints_B, bbox_A, bbox_B):
     flag_match, dist = pose_matching(data_A, data_B)
     end = time.time()
     return dist
+
+
+# def get_iou_score(bbox_gt, bbox_det):
+#     boxA = xywh_to_x1y1x2y2(bbox_gt)
+#     boxB = xywh_to_x1y1x2y2(bbox_det)
+#
+#     iou_score = iou(boxA, boxB)
+#     # print("iou_score: ", iou_score)
+#     return iou_score
 
 
 def is_target_lost(keypoints, method="max_average"):
@@ -830,6 +871,13 @@ def prepare_results(test_data, cls_skeleton, cls_dets):
     return dump_results
 
 
+def is_keyframe(img_id, interval=10):
+    if img_id % interval == 0:
+        return True
+    else:
+        return False
+
+
 def pose_to_standard_mot(keypoints_list_list, dets_list_list):
     openSVAI_python_data_list = []
 
@@ -953,24 +1001,19 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 if __name__ == '__main__':
 
     global args
+    ## from detector.detector_yolov3 import *
     parser = argparse.ArgumentParser()
     # parser.add_argument('--video_path', '-v', type=str, dest='video_path',
     #                     # default="data/demo/video.mp4")
     #                     default="data/demo/0003.m4")
     # parser.add_argument('--images_path', '-i', type=str, dest='images_path',
     #                     default="data/demo/mpii-video-pose/0001")
-    # parser.add_argument('--model', '-m', type=str, dest='test_model',
-    #                     default="weights/mobile-deconv/snapshot_296.ckpt")
-    # parser.add_argument('--model', '-m', type=str, dest='test_model',
-    #                     default="weights/CPN101/CPN_snapshot_293.ckpt")
+    # default="data/demo/0002")
     parser.add_argument('--model', '-m', type=str, dest='test_model',
-                        default="weights/MSRA152/MSRA_snapshot_285.ckpt")
-    # default="weights/mobile-deconv/snapshot_296.ckpt")
+                        default="weights/mobile-deconv/snapshot_296.ckpt")
     parser.add_argument('--train', type=bool, dest='train',
                         default=True)
-    # parser.add_argument('--exp_number', type=str, dest='exp_number', default='2017-val',
-    #                     help='number of experiment')
-    parser.add_argument('--exp_number', type=str, dest='exp_number', default='test_one_video',
+    parser.add_argument('--exp_number', type=str, dest='exp_number', default='2017-val',
                         help='number of experiment')
     args = parser.parse_args()
     args.bbox_thresh = 0.4
@@ -983,64 +1026,51 @@ if __name__ == '__main__':
     train = args.train
     exp_number = args.exp_number
 
-    ##################################
-    test_one_video = False
-    # exp_number = "test_one_video_MSRA152"
-    val = True
-    exp_number = "2017-val-iou-{}-pose{}-together-MSRA152".format(iou_alpha1, pose_alpha1)
-    test = False
-    # exp_number = "2017-test-iou-pose-together"
     experiment_output_root = '/media/F'
     visualize_root_folder = "{}/exp_{}/visualize".format(experiment_output_root, exp_number)
     output_video_folder = "{}/exp_{}/videos".format(experiment_output_root, exp_number)
     output_json_folder = "{}/exp_{}/jsons".format(experiment_output_root, exp_number)
-    evaluation_folder = "{}/exp_{}/evaluation".format(experiment_output_root, exp_number)
     logger_file_foler = "{}/exp_{}/log".format(experiment_output_root, exp_number)
 
     create_folder(output_video_folder)
     create_folder(output_json_folder)
     create_folder(logger_file_foler)
-
-    create_folder(evaluation_folder)
-    create_folder(os.path.join(evaluation_folder, "annotations", "val"))
-    create_folder(os.path.join(evaluation_folder, "out"))
-    create_folder(os.path.join(evaluation_folder, "posetrack_results"))
     ## save log file
     logging.basicConfig(format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s',
                         level=logging.DEBUG,
                         filename=os.path.join(logger_file_foler, 'experiment.log'),
                         filemode='a')
-    ####################################
+    # 加载gt信息进行track
 
-    logger.info(" test_one_video:{}  val:{}  test:{} ".format(test_one_video, val, test))
+    # input_json_path = "/media/D/DataSet/PoseTrack2017/gt/posetrack_train.json"
 
-    """ 每个JSON文件为一个视频，读取一个个的JSON文件，产生结果 """
-    if test_one_video:
-        numbers = ['24642', '24635', '23699', '23695', '23484', '23471', '23416', '22682', '22671', '22642', '22124',
-                   '00043', '00096']
-        posetrack_dataset_path = "/media/D/DataSet/PoseTrack/PoseTrack2017/posetrack_data"
-        numbers = ['23699']
-        input_jsons = ["/media/D/DataSet/PoseTrack2017/train/{}_mpii_relpath_5sec_trainsub_OpenSVAI.json".format(number)
-                       for
-                       number in numbers]
-        frame_number = 0
-        videos_number = len(input_jsons)
-        for input_json in tqdm(input_jsons):
-            videos_json_data, videos_number = read_opensvai_json(input_json)
-            for video_seq_id in range(videos_number):
-                video_json_data = videos_json_data[video_seq_id]
-                video_path, video_name = read_video_data_opensvai_json(video_json_data)
-                image_folder = os.path.join(posetrack_dataset_path, video_path)
-                visualize_folder = os.path.join(visualize_root_folder, video_name)
-                output_video_path = os.path.join(output_video_folder, "{}_out.mp4".format(video_name))
-                output_json_path = os.path.join(output_json_folder, "{}.json".format(video_name))
-                create_folder(visualize_folder)
-                frame_number += len(video_json_data)
-                light_track(pose_estimator, image_folder, output_json_path, visualize_folder, output_video_path,
-                            video_json_data)
-        logger.info("videos_number:{}".format(videos_number))
-        logger.info("frames_number:{}".format(frame_number))
+    # input_json_path = "/media/D/DataSet/PoseTrack2017/train/24985_mpii_relpath_5sec_trainsub_OpenSVAI.json"
+    # input_json_path = "/media/D/DataSet/PoseTrack2017/train/24893_mpii_relpath_5sec_trainsub_OpenSVAI.json"
 
+    # numbers = [24642, 24635, 23699, 23695, 23484, 23471, 23416, 22682, 22671, 22642, 22124]
+    # numbers = ['24642', '24635', '23699', '23695', '23484', '23471', '23416', '22682', '22671', '22642', '22124',
+    #            '00043', '00096']
+    # input_jsons = ["/media/D/DataSet/PoseTrack2017/train/{}_mpii_relpath_5sec_trainsub_OpenSVAI.json".format(number) for
+    #     #                number in
+    #     #                numbers]
+    # input_jsons = "/media/D/DataSet/PoseTrack2017/gt/posetrack_val.json"
+
+    # for input_json in tqdm(input_jsons):
+    #     videos_json_data, videos_number = read_opensvai_json(input_json)
+    #     for video_seq_id in range(videos_number):
+    #         video_json_data = videos_json_data[video_seq_id]
+    #         video_path, video_name = read_video_data_opensvai_json(video_json_data)
+    #         image_folder = os.path.join(posetrack_dataset_path, video_path)
+    #         visualize_folder = os.path.join(visualize_root_folder, video_name)
+    #         output_video_path = os.path.join(output_video_folder, "{}_out.mp4".format(video_name))
+    #         output_json_path = os.path.join(output_json_folder, "{}.json".format(video_name))
+    #         create_folder(visualize_folder)
+    #
+    #         light_track(pose_estimator, image_folder, output_json_path, visualize_folder, output_video_path,
+    #                         video_json_data)
+
+    val = True
+    test = False
     """ The PoseTrack2017 validation set """
     if val:
         input_jsons_folder = "/media/D/DataSet/PoseTrack2017/val/"
@@ -1087,13 +1117,3 @@ if __name__ == '__main__':
 
         logger.info("videos_number:{}".format(videos_number))
         logger.info("frames_number:{}".format(frame_number))
-
-    ''' Display statistics '''
-    logger.info("total_time_ALL: {:.2f}s".format(total_time_ALL))
-    logger.info("total_time_DET: {:.2f}s".format(total_time_DET))
-    logger.info("total_time_POSE_ESTIMATOR: {:.2f}s".format(total_time_POSE_ESTIMATOR))
-    logger.info("total_time_POSE_SIMILARITY: {:.2f}s".format(total_time_POSE_SIMILARITY))
-    logger.info("total_time_ASSOCIATE: {:.2f}s".format(total_time_ASSOCIATE))
-    logger.info("total_time_LIGHTTRACK: {:.2f}s".format(
-        total_time_ALL - total_time_DET - total_time_POSE_ESTIMATOR - total_time_POSE_SIMILARITY - total_time_ASSOCIATE))
-    logger.info("filter_bbox_number:{}".format(filter_bbox_number))

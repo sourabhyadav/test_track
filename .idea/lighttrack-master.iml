@@ -10,8 +10,10 @@
       <sourceFolder url="file://$MODULE_DIR$/detector" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/HPE" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/graph" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/my_toolbox" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/my_toolbox/convert" isTestSource="false" />
     </content>
-    <orderEntry type="jdk" jdkName="Remote Python 3.6.7 (sftp://chm@10.21.243.206:22/home/chm/miniconda3/envs/lighttrack/bin/python3)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Remote Python 3.6.10 (sftp://chm@192.168.0.188:22/home/chm/miniconda3/envs/lighttrack/bin/python3)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="TestRunnerService">

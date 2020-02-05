@@ -10,6 +10,13 @@
             </list>
           </settings>
         </remote-mappings>
+        <remote-mappings server-id="python@sftp://chm@10.21.243.206:22/home/chm/miniconda3/envs/py-lighttrack/bin/python">
+          <settings>
+            <list>
+              <mapping local-root="$PROJECT_DIR$" remote-root="/media/D/light-track" />
+            </list>
+          </settings>
+        </remote-mappings>
       </list>
     </list>
   </component>
